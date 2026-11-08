@@ -11,7 +11,10 @@ from dotenv import load_dotenv
 import logging
 
 # Load environment variables
-load_dotenv()
+# override=True: a stale shell export of OPENROUTER_API_KEY (old dead key)
+# was silently shadowing the updated .env value -> 401 even with a good key.
+# .env is the source of truth locally; in prod (no .env file) env vars still apply.
+load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
@@ -55,24 +58,21 @@ class OpenRouterClient:
             "grok-4.1-fast": "x-ai/grok-4.1-fast",  # xAI's best agentic model - 2M context
             "grok-4-fast": "x-ai/grok-4-fast",      # Multimodal with SOTA cost-efficiency
             "grok-code-fast": "x-ai/grok-code-fast-1",  # Specialized for coding
+            "nemotron-3-ultra": "nvidia/nemotron-3-ultra-550b-a55b:free",  # Verified live 200
+            "nemotron-3.5-super-vl": "nvidia/nemotron-3.5-super-vl:free",  # Verified live 200, vision
             "gemini-pro": "google/gemini-pro",
             "llama-2-70b": "meta-llama/llama-2-70b-chat",
             "mixtral-8x7b": "mistralai/mixtral-8x7b-instruct"
         }
         
         # Default model for different analysis types
-        # Using xAI Grok 4.1 Fast as primary model for best performance/cost ratio
-        self.default_models = {
-            "content_analysis": "x-ai/grok-4.1-fast",
-            "personality_analysis": "x-ai/grok-4.1-fast", 
-            "authenticity_analysis": "x-ai/grok-4.1-fast",
-            "sentiment_analysis": "x-ai/grok-4-fast",
-            "trend_analysis": "x-ai/grok-4-fast",
-            "belief_analysis": "x-ai/grok-4.1-fast",     # New v4.1 logic is great for nuance
-            "consumer_analysis": "x-ai/grok-4.1-fast",   # New v4.1 reasoning for purchase intent
-            "psych": "x-ai/grok-4.1-fast",               # Deep psychological profiling
-            "general": "x-ai/grok-4.1-fast"
-        }
+        # Configurable via OPENROUTER_MODEL env (fallback: Nemotron 3 Ultra free,
+        # verified live 200). Grok remains available via self.models.
+        _m = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+        self.default_models = {k: _m for k in [
+            "content_analysis", "personality_analysis", "authenticity_analysis",
+            "sentiment_analysis", "trend_analysis", "belief_analysis",
+            "consumer_analysis", "psych", "general"]}
     
     def analyze(self, prompt: str, system_prompt: str = None, model_type: str = "general") -> Dict[str, Any]:
         """
