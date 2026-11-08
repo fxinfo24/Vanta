@@ -34,12 +34,19 @@ Vanta uses ScrapeCreators for universal access to 10+ social media platforms:
 Vanta uses OpenRouter for access to multiple AI models:
 
 1. **Configuration Required**: Add your OpenRouter API key to .env file
-2. **Available Models**: Grok 4.1 Fast, GPT-4, Gemini, Llama-2, Mixtral
+2. **Default model**: `nvidia/nemotron-3-ultra-550b-a55b:free` (verified live). Override with `OPENROUTER_MODEL` (e.g. `nvidia/nemotron-3.5-super-vl:free`).
 3. **Setup Instructions**:
    ```
    # Add your OpenRouter API key to .env file
    OPENROUTER_API_KEY=your_openrouter_api_key_here
    ```
+
+#### Apify Setup (fallback scraper, optional)
+Used automatically when ScrapeCreators credits exhaust (Facebook). Actor: `apify/facebook-posts-scraper`.
+```
+APIFY_API_TOKEN=your_apify_token_here
+```
+Note: Apify free-tier usage may be too small for actor runs — raise the limit at https://console.apify.com/billing if the fallback returns 402.
 
 #### Legacy Individual APIs (Optional)
 For direct API access (not recommended - use ScrapeCreators instead):
@@ -82,7 +89,7 @@ The following critical issues have been resolved:
 - ✅ **Mobile Applications**: React Native + Expo (iOS/Android)
 - ✅ **Desktop Application**: PyQt5 GUI with advanced visualizations
 - ✅ **10+ Platform Support**: Universal data collection via ScrapeCreators
-- ✅ **Universal AI**: Grok 4.1 Fast, GPT-4, Gemini, Llama-2 via OpenRouter
+- ✅ **Universal AI**: Nemotron (default free model) via OpenRouter, override with `OPENROUTER_MODEL`
 - ✅ **Real-time Processing**: Celery + Redis with Flower monitoring
 - ✅ **Enterprise Features**: Team management and white-label ready
 - ✅ **Database**: PostgreSQL (production), SQLite (development)

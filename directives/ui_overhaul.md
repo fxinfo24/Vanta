@@ -1,5 +1,7 @@
 # UI/UX Overhaul Directive
 
+> **Status: completed** (glassmorphism + deep dark mode shipped; verification panel with claims/verdicts/confidence added to Dashboard). Kept as design reference only.
+
 ## Goal
 Transform the Vanta frontend into a premium, award-winning styling implementation using Glassmorphism, Deep Dark Mode, and Vibrant Gradients.
 

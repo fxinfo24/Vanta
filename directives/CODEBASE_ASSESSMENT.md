@@ -6,7 +6,7 @@
 ---
 
 ## 1. Executive Summary
-Vanta is currently in a **"High-Potential/Disconnected"** state. While the individual components (Premium Glassmorphism Frontend, Multi-Platform Scraper, and SOTA Grok 4.1 Fast AI integration) are sophisticated and production-ready, their integration is currently fragmented. This document provides a root-cause analysis of the current limitations and a deterministic roadmap to reach the "Best Result": a fully functional, universal social intelligence platform.
+> **Nov 2026 update:** Phases 1, 3 (partially) and 4 below are done — Product B consolidation, result persistence (`Task.result_data` in DB), `/api/health`, platform prompting, and Apify fallback are implemented and verified (see `STATUS.md`). Remaining: deploy a live backend for the Vercel frontend, raise Apify usage limit, add Flask auth. Note: there is **no heuristic fallback** (earlier text claiming one was falsified); LLM failures surface as section errors.
 
 ---
 
@@ -14,7 +14,7 @@ Vanta is currently in a **"High-Potential/Disconnected"** state. While the indiv
 
 ### 2.1 The "3-Layer" Architecture Integrity
 *   **Layer 1 (Directive)**: ✅ Excellent. Detailed SOPs exist in `directives/`.
-*   **Layer 2 (Orchestration)**: ✅ **COMPLETED**. `SocialMediaAnalyzer` now supports ALL platforms via dynamic dispatch and Hybrid AI/Heuristic engines.
+*   **Layer 2 (Orchestration)**: ✅ **COMPLETED**. `SocialMediaAnalyzer` supports ALL platforms via dynamic dispatch (see STATUS.md for current state).
 *   **Layer 3 (Execution)**: ✅ Robust. `ScrapeCreatorsClient` expanded to 20+ platforms. `OpenRouterClient` fully integrated.
 
 ### 2.2 Critical "Mismatches" Found
@@ -22,7 +22,7 @@ Vanta is currently in a **"High-Potential/Disconnected"** state. While the indiv
 | :--- | :--- | :--- |
 | **Platform Scope** | Promised 10+ platforms; Now supports 20+ (Amazon, TikTok Shop, etc). | **RESOLVED** |
 | **Logic Redundancy** | Duplicate `DataCollector` logic normalized via `content_analyzer.py` refactor. | **RESOLVED** |
-| **Intelligence** | Hybrid Engine (OpenRouter First -> Heuristic Fallback) implemented. | **BEST-IN-CLASS** |
+| **Intelligence** | OpenRouter (Nemotron default) implemented; no heuristic fallback. | **VERIFIED LIVE** |
 | **Data Flow** | Universal Adapter pattern connects all components seamlessly. | **RESOLVED** |
 
 ---
@@ -43,7 +43,7 @@ Vanta is currently in a **"High-Potential/Disconnected"** state. While the indiv
 *   **Vercel Sync**: Update `VITE_API_BASE_URL` in the Vercel dashboard to point to the new live API.
 
 ### 🧠 Phase 3: AI Intelligence Optimization
-*Goal: Maximum ROI from Grok 4.1 Fast.*
+*Goal: Maximum ROI from the configured LLM (Nemotron default).*
 *   **Platform-Specific Prompting**: Create specialized prompt templates for professional platforms (LinkedIn) vs. entertainment platforms (TikTok/YouTube).
 *   **Vision Integration**: Activate the `vision_analyzer.py` for profile pictures and post images to detect "AI-generated" personas (Deepfake detection).
 

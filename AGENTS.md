@@ -81,7 +81,7 @@ Current status:
 - Infrastructure: Docker Compose (Full Stack - Verified Healthy)
 - Branding: Fully rebranded to "Vanta" with premium logo.png and dark-mode UI.
 - Capabilities: "Deep Mind" profiling implemented for TikTok (Comments), YouTube (Transcripts), and Instagram (Deep Posts).
-- Backend: Python 3.13 + Hybrid AI Engine (OpenRouter Grok 4.1 / GPT-4 + Heuristic Fallback).
+- Backend: Python 3.14 + OpenRouter LLM (Nemotron default; no heuristic fallback — failures surface as errors). Product B (7-layer verification) consolidated into the same Flask app; see STATUS.md.
 - Fixed: Resolved "Empty/Blank Results" bug, "Summary Generation Failed" error, Authenticity false positives, Input/Button lagging, Real-time Polling, Deep PDF Reports, and Mobile/Network Scalability.
 
 My goal: [describe what you want to do]

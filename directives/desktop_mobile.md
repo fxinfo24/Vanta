@@ -7,12 +7,12 @@ Vanta Desktop is a PyQt5-based application that provides a native desktop interf
 
 ### Features
 - **Multi-platform Analysis**: Support for all 10+ social platforms
-- **Real-time Progress**: Live updates via WebSocket connections
+- **Progress**: polling-based task status (no WebSockets implemented)
 - **Advanced Visualizations**: Interactive charts and graphs
 - **Bulk Processing**: Analyze multiple profiles simultaneously
 - **Export Capabilities**: PDF, JSON, CSV, and image exports
 - **Offline Mode**: Continue working without internet connection
-- **Team Integration**: Access shared team analyses
+- **Team Integration**: not implemented (enterprise modules are unwired)
 
 ### Installation
 ```bash

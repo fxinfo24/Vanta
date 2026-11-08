@@ -1,5 +1,8 @@
 # Vanta Testing Guide
 
+## Current baseline (Nov 2026)
+`pytest`: **36 passed / 4 failed** — the 4 failures are pre-existing and unrelated to recent changes (`test_analyze_profile`, `test_full_analysis_flow`, `test_preprocess_text`, `test_analyze_writing_style` in the NLP/analyzer area). `tsc --noEmit` is clean.
+
 ## Installation
 
 First, install the project dependencies:

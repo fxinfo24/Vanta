@@ -9,9 +9,9 @@
 
 # Vanta
 
-Vanta is the most comprehensive AI-powered social media intelligence platform, providing advanced analysis across 21+ major social platforms including Twitter/X, Instagram, LinkedIn, TikTok, Facebook, YouTube, Snapchat, Pinterest, Reddit, GitHub, and major commerce channels. Using cutting-edge machine learning, universal data collection, and real-time processing, Vanta delivers immediate insights into profile authenticity, engagement patterns, content analysis, and predictive analytics.
+Vanta is an AI-powered social media intelligence platform: profile analysis across 21 platforms (Twitter/X, Instagram, LinkedIn, TikTok, Facebook, YouTube, Snapchat, Pinterest, Reddit, GitHub, commerce channels, …) plus a consolidated 7-layer claim-verification pipeline in the same Flask app.
 
-**🚀 Transformational Platform**: Industry-leading coverage with 333% more platforms than competitors, real-time processing infrastructure, mobile-first design, and complete enterprise features including team collaboration and white-labeling.
+**Current verified state:** see `STATUS.md` (single source of truth). Data via ScrapeCreators (primary) with Apify fallback; LLM analysis via OpenRouter (Nemotron). No auth on the API, no enterprise/team endpoints wired — `app/enterprise/*` modules exist but are not exposed via routes.
 
 ## Features
 
@@ -21,10 +21,8 @@ Vanta is the most comprehensive AI-powered social media intelligence platform, p
   - **Video**: TikTok, YouTube, Twitch, Kick
   - **Professional**: LinkedIn, GitHub, Threads, BlueSky
   - **Commerce**: Amazon Shop, TikTok Shop, Google Shopping, Linktree
-- **Hybrid Intelligence**:
-  - **AI-First**: Uses Grok/GPT-4 for deep semantic analysis
-  - **Heuristic Fallback**: Ensures 100% uptime even if AI is offline
-  - **Universal Data**: Single unified adapter for all platforms
+- **Intelligence**: OpenRouter LLM analysis (default `nvidia/nemotron-3-ultra-550b-a55b:free`, override with `OPENROUTER_MODEL`). If the LLM call fails, the section records an error — there is no heuristic fallback.
+  - **Data**: ScrapeCreators unified adapter (primary) → Apify actor fallback on credit exhaustion (Facebook).
 
 ## Quick Start (Docker)
 
@@ -219,8 +217,9 @@ cd frontend && npm run dev
 |----------|----------|-------------|
 | `SECRET_KEY` | Yes | Flask secret key for sessions |
 | `CORS_ORIGINS` | Yes | Comma-separated frontend URLs |
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API for AI (Grok 4.1 Fast) |
+| `OPENROUTER_API_KEY` | Yes | OpenRouter API for LLM analysis (Nemotron default) |
 | `SCRAPECREATORS_API_KEY` | Yes | ScrapeCreators API for social data |
+| `APIFY_API_TOKEN` | No | Apify fallback scraper (Facebook); free-tier usage currently exhausted |
 | `DATABASE_URI` | No | PostgreSQL URL (defaults to SQLite) |
 | `REDIS_URL` | No | For Celery background tasks |
 | `FORCE_CELERY` | No | Set to "true" to use Celery over threading |
@@ -324,16 +323,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **Session Handover**: `directives/HANDOVER.md` - Project state and deployment options
 - **Agent Guide**: `AGENTS.md` - Core operating principles and architecture
 
-## Achievements Summary
+## Status
 
-🌍 **10+ Platform Coverage** - More comprehensive than any competitor  
-⚡ **Real-time Processing** - 10x faster than traditional batch processing  
-🤖 **Universal AI Integration** - Access to Grok 4.1 Fast, GPT-4, Gemini, Llama-2  
-📱 **Mobile-First Design** - Cross-platform iOS and Android apps  
-🏢 **Enterprise Ready** - Team collaboration and white-label solutions  
-💰 **Complete Monetization** - Usage-based billing and revenue analytics  
-
-**Result**: Industry-leading social media intelligence platform ready for commercial deployment.
+See `STATUS.md` for the current verified state, known limits, and docs map. In short: local stack (Flask :5000 + Vite :5173) is fully working E2E; the Vercel frontend needs a deployed backend URL via `VITE_API_BASE_URL`; no auth, no team/billing endpoints (enterprise modules unwired).
 
 ## Support
 

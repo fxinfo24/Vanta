@@ -59,6 +59,12 @@ Return JSON results for a completed task.
 #### GET /api/tasks/{task_id}/download
 Download results as a `.json` file.
 
+### Apify Endpoints (implemented)
+
+- `GET /api/apify/health` — token check (`{configured, valid, user}`), no Actor run / no cost.
+- `POST /api/apify/run` — run an Apify actor directly: `{actor, input}` → dataset items. Facebook fallback actor is `apify/facebook-posts-scraper` (verified live; do not use the 404 `apify/facebook-scraper`).
+- Automatic fallback: when ScrapeCreators returns 402 (`CREDITS_EXHAUSTED`), `DeepDossierCollector` falls back to Apify for Facebook profile+posts. Note: Apify free-tier usage must cover the run (raise limit at console.apify.com/billing).
+
 ### Stats Endpoints (implemented)
 
 #### GET /api/stats/platform-distribution

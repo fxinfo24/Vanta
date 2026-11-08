@@ -14,10 +14,10 @@
 ### Backend
 - **Framework**: Flask with SQLAlchemy ORM
 - **Database**: PostgreSQL (production), SQLite (development)
-- **Authentication**: JWT tokens with bcrypt password hashing
+- **Authentication**: none implemented on Flask routes (add before public deployment)
 - **Real-time Processing**: Celery with Redis backend
 - **Data Collection**: ScrapeCreators universal API (10+ platforms)
-- **AI Analysis**: OpenRouter (Grok 4.1 Fast, GPT-4, Gemini, Llama-2)
+- **AI Analysis**: OpenRouter (default Nemotron free model; override via `OPENROUTER_MODEL`)
 - **Computer Vision**: OpenCV with PIL for image analysis
 - **Task Monitoring**: Flower dashboard
 
@@ -28,11 +28,8 @@
 - **Charts**: Recharts for data visualization
 - **State Management**: React hooks with context API
 
-### Enterprise Features
-- **Team Management**: Role-based access control (Owner/Admin/Analyst/Viewer)
-- **White-label**: Custom branding, domains, and styling
-- **Monetization**: Usage-based billing with Stripe integration
-- **Multi-tenancy**: Team collaboration and shared workspaces
+### Enterprise modules (not wired)
+`app/enterprise/` contains `team_management.py`, `monetization.py`, `whitelabel.py` module code, but **no Flask route references them** — they are not exposed via the API. Treat as unintegrated.
 
 ## Project Structure
 
@@ -44,7 +41,7 @@ Vanta/
 │   ├── core/           # Universal API integration & analysis engine
 │   ├── web/            # Flask API & database models
 │   ├── desktop/        # PyQt5 GUI application
-│   ├── enterprise/     # Team management & white-label features
+│   ├── enterprise/     # Unintegrated module code (no routes)
 │   └── utils/          # Shared utilities and helpers
 ├── frontend/           # React + TypeScript web interface
 ├── mobile/             # React Native + Expo mobile apps

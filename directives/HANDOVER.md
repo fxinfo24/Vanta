@@ -1,20 +1,20 @@
 # Vanta (formerly Vanta) - Session Handover Document
 
-> **Last Updated**: January 23, 2026 (Local Time)
-> **Purpose**: Complete context for resuming work in a new session (Standardizing on **Vanta**)
+> **Last Updated**: November 2026
+> **Purpose**: Complete context for resuming work in a new session. **Current verified state lives in `STATUS.md` (repo root) — read that first; this file is session context only.**
 
 ---
 
 ## 📋 Project Summary
 
-**Vanta** is an industry-leading social intelligence platform that provides **Deep Hybrid AI Analysis** across **21+ platforms**. It uses a "Deep Mind" intelligence engine that prioritizes **OpenRouter (Grok 4.1 Fast / GPT-4)** for psychological and semantic analysis, seamlessly falling back to local heuristics if AI services are unavailable. Vanta is built for scholars, researchers, and intelligence professionals.
+**Vanta** is a social intelligence platform providing deep AI analysis across **21+ platforms** via a "Deep Mind" dossier engine (`SocialMediaAnalyzer` → `DeepDossierCollector` → intelligence analyzers → OpenRouter). Default LLM model is **Nemotron** (`nvidia/nemotron-3-ultra-550b-a55b:free`, override via `OPENROUTER_MODEL`). There is **no heuristic fallback** — if the LLM call fails, the section stores an error. Product B (7-layer verification) is consolidated into the same Flask app + DB (see `STATUS.md`).
 
 ### Tech Stack (Upgraded)
 | Layer | Technology | Status |
 |-------|------------|--------|
 | **Frontend** | React 18 + TypeScript + Vite | ✅ Containerized (Docker) |
-| **Backend** | Python 3.13 + Flask + Celery | ✅ Containerized (Docker) |
-| **Intelligence** | Hybrid Engine (OpenRouter + Heuristic) | ✅ Best-in-Class Implementation |
+| **Backend** | Python 3.14 + Flask + Celery | ✅ Containerized (Docker) |
+| **Intelligence** | OpenRouter LLM (Nemotron default) + Apify fallback for scraping | ✅ Verified live |
 | **Data** | Universal ScrapeCreators (20+ Platforms) | ✅ Configured for all platforms |
 | **Infra** | Docker Compose (Full Stack) | ✅ **READY FOR DEPLOYMENT** |
 
@@ -45,8 +45,8 @@ The entire stack is now containerized and orchestrated via Docker Compose. No mo
 Vanta/
 ├── app/
 │   ├── core/           # Hybrid Intelligence Engine
-│   │   ├── analyzer.py         # Universal Orchestrator (AI -> Heuristic)
-│   │   ├── openrouter_client.py # AI Client (Grok 4.1 Fast / GPT-4)
+│   │   ├── analyzer.py         # Universal Orchestrator
+│   │   ├── openrouter_client.py # AI Client (Nemotron default)
 │   │   ├── scrape_client.py    # Universal Data Adapter (20+ Platforms)
 │   │   └── ...
 │   ├── web/            # Flask API
@@ -56,7 +56,7 @@ Vanta/
 │   └── ...
 ├── docker-compose.yml  # Full stack orchestration (API, Worker, Frontend, Redis)
 ├── Dockerfile          # Backend/Worker container config
-├── requirements-full.txt # Python 3.13 dependencies
+├── requirements-full.txt # Python dependencies (venv is 3.14)
 └── ...
 ```
 
@@ -79,9 +79,7 @@ docker compose logs -f
 Once running:
 1. Go to http://localhost:5173
 2. Enter a username (e.g., `elonmusk` for Twitter or a product handle for Amazon)
-3. The system will auto-select the **Hybrid Engine**:
-   - Tries OpenRouter AI first.
-   - Falls back to internal Heuristics if offline.
+3. The system calls OpenRouter (Nemotron). If the LLM is unavailable, the affected section records an error (no heuristic fallback).
 
 ---
 
@@ -91,7 +89,7 @@ Once running:
 |------|--------|
 | **Vanta Rebrand** | ✅ Fully implemented (Logo, Favicon, UI, Naming) |
 | **Deep Mind Intelligence** | ✅ Added TikTok, YouTube, Instagram (Deep Posts) |
-| **Hybrid Intelligence Engine** | ✅ AI-First logic with Heuristic Fallback |
+| **Intelligence Engine** | ✅ OpenRouter LLM (no heuristic fallback) |
 | **Universal Platform Support** | ✅ Added Google, Linktree, Komi, Pillar, Linkbio, Shops (21+ Total) |
 | **Fixed Analysis Failures** | ✅ Solved "Summary generation failed" & Authenticity false positives |
 | **Docker Orchestration** | ✅ Full Stack Healthy (Clean Redeploy) |
@@ -112,8 +110,9 @@ Once running:
 ## 🔑 API Keys Location
 
 All API keys are in `.env` file. The Docker containers automatically load these.
-- `OPENROUTER_API_KEY`: Required for "Smart" analysis.
-- `SCRAPECREATORS_API_KEY`: Required for "Real" data (system mocks if missing).
+- `OPENROUTER_API_KEY`: Required for LLM analysis.
+- `SCRAPECREATORS_API_KEY`: Required for real data (system mocks if missing). Balance is dashboard-only (no credits API).
+- `APIFY_API_TOKEN`: Optional fallback scraper (Facebook). Free-tier usage is currently exhausted — raise the limit at console.apify.com/billing to activate the fallback.
 
 ---
 
@@ -134,7 +133,7 @@ Current State:
 - Architecture: Dockerized Full-Stack (Flask + React + Redis).
 - Core: Deep Intelligence Engine with Self-Healing Identity Resolution.
 - Status: Fully operational (Deep Analysis, Network Graphs, Dossier Downloads verified).
-- Tech Stack: Python 3.13, Flask, React TypeScript, SQLite (Dev).
+- Tech Stack: Python 3.14, Flask, React TypeScript, SQLite (Dev).
 
 Goal: Continue enhancing the Vanta platform.
 ```
