@@ -38,10 +38,15 @@ class BeliefSystemAnalyzer:
         if not text_samples:
             return {"error": "Insufficient data for belief analysis"}
             
+        n = len(text_samples)
         system_prompt = """You are an expert Political Scientist and Sociologist specializing in digital discourse analysis.
 Your goal is to accurately map the subject's worldview based on their digital footprint.
 Analyze for nuance - avoid simple labeling if the subject shows complexity.
-Be objective and analytical."""
+Be objective and analytical.
+CALIBRATION RULES (mandatory):
+- Every stance, label and cause MUST cite specific evidence from the samples (quote/paraphrase the exact post that supports it) in an 'evidence' field.
+- Confidence must reflect sample size: with fewer than 10 samples, confidence <= 0.6; with fewer than 5, <= 0.4. Never output confidence > 0.85 on a small sample.
+- If evidence is thin or contradictory, say so in 'evidence_quality' and lower confidence. Never fabricate stances not supported by a sample."""
 
         prompt = f"""
         Analyze this digital footprint to build a comprehensive Worldview Profile.
@@ -78,7 +83,13 @@ Be objective and analytical."""
            - openness_to_change: Score 0-10
            - radicalization_risk: Score 0-10
            - echo_chamber_score: Score 0-10 (How insular are their views?)
-        
+
+        6. EVIDENCE & CALIBRATION (mandatory)
+           - evidence_count: number of samples used (""" + str(n) + """)
+           - evidence_quality: "strong" (10+ samples, consistent) | "moderate" (5-9) | "weak" (<5 or contradictory)
+           - evidence: object mapping each major claim (label, each supported/opposed cause) to the exact sample text that supports it
+           - confidence_tier: "high" | "moderate" | "low" (derived from evidence_quality)
+
         Format as pure JSON.
         """
         
@@ -127,6 +138,14 @@ Be objective and analytical."""
             bio = data['profile'].get('bio') or data['profile'].get('description')
             if bio: texts.append(f"BIO: {bio}")
             
+        # 1b. Facebook deep data (comments/reels carry opinion text too)
+        for c in data.get('facebook_comments', []) or []:
+            if c.get('text'):
+                texts.append(f"COMMENT: {c['text'][:500]}")
+        for r in data.get('facebook_reels', []) or []:
+            if r.get('text'):
+                texts.append(f"REEL: {str(r['text'])[:500]}")
+
         # 2. Transcripts (highest fidelity for detailed thoughts)
         for t in data.get('transcripts', []):
             txt = t.get('transcript', {}).get('transcript', '')

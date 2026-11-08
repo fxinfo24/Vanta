@@ -94,10 +94,11 @@ class OpenRouterClient:
                 messages=messages,
                 model=model,
                 temperature=0.3, # Low temp for structured data
-                max_tokens=3000
-            )
+                max_tokens=6000  # Nemotron reasoning models burn tokens thinking; 3000 truncates long JSON
+            ) or ""
             
-            # Auto-clean markdown
+            # Auto-clean markdown + extract first JSON object (Nemotron sometimes
+            # wraps JSON in prose; naive strip() caused JSON parse failures)
             clean_response = response.strip()
             if clean_response.startswith("```json"):
                 clean_response = clean_response[7:]
@@ -105,8 +106,15 @@ class OpenRouterClient:
                 clean_response = clean_response[3:]
             if clean_response.endswith("```"):
                 clean_response = clean_response[:-3]
-                
-            return json.loads(clean_response)
+            clean_response = clean_response.strip()
+            try:
+                return json.loads(clean_response)
+            except json.JSONDecodeError:
+                start = clean_response.find("{")
+                end = clean_response.rfind("}")
+                if start != -1 and end > start:
+                    return json.loads(clean_response[start:end + 1])
+                raise
             
         except json.JSONDecodeError as e:
             logger.error(f"Generic analysis JSON parse failed: {e}")
@@ -147,7 +155,7 @@ class OpenRouterClient:
                 raise OpenRouterError(f"API error: {response.status_code} - {response.text}")
                 
             result = response.json()
-            return result["choices"][0]["message"]["content"]
+            return result["choices"][0]["message"].get("content") or ""
             
         except requests.RequestException as e:
             raise OpenRouterError(f"Request failed: {str(e)}")

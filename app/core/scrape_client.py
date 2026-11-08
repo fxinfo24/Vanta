@@ -940,21 +940,45 @@ class ScrapeCreatorsClient:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def get_facebook_reels(self, username: str, count: int = 20) -> List[Dict[str, Any]]:
-        """Get Facebook reels for a user (real endpoint: /profile/reels, param `url`)"""
+        """Get Facebook reels for a user (real endpoint: /profile/reels, param `url`, paginated)"""
         endpoint = "v1/facebook/profile/reels"
         try:
-            response = self._make_request("GET", endpoint, params={"url": self._fb_url(username)})
-            return response.get("reels", [])
+            reels, cursor = [], None
+            for _ in range(3):  # max 3 pages to bound credit use
+                params = {"url": self._fb_url(username)}
+                if cursor:
+                    params["cursor"] = cursor
+                response = self._make_request("GET", endpoint, params=params)
+                batch = response.get("reels", [])
+                if not batch:
+                    break
+                reels.extend(batch)
+                cursor = response.get("cursor") or response.get("next_page_id")
+                if not cursor or len(reels) >= count:
+                    break
+            return reels[:count]
         except Exception as e:
             logger.warning(f"Failed to get Facebook reels for {username}: {e}")
             return []
 
     def get_facebook_posts(self, username: str, count: int = 20) -> List[Dict[str, Any]]:
-        """Get Facebook posts for a user (real endpoint: /profile/posts, param `url`, 3/page)"""
+        """Get Facebook posts for a user (real endpoint: /profile/posts, param `url`, 3/page, paginated)"""
         endpoint = "v1/facebook/profile/posts"
         try:
-            response = self._make_request("GET", endpoint, params={"url": self._fb_url(username)})
-            return response.get("posts", [])
+            posts, cursor = [], None
+            for _ in range(4):  # max 4 pages = 12 posts, bounds credit use
+                params = {"url": self._fb_url(username)}
+                if cursor:
+                    params["cursor"] = cursor
+                response = self._make_request("GET", endpoint, params=params)
+                batch = response.get("posts", [])
+                if not batch:
+                    break
+                posts.extend(batch)
+                cursor = response.get("cursor")
+                if not cursor or len(posts) >= count:
+                    break
+            return posts[:count]
         except Exception as e:
             logger.warning(f"Failed to get Facebook posts for {username}: {e}")
             return []
@@ -1005,10 +1029,12 @@ class ScrapeCreatorsClient:
             return {"transcript": "", "language": "", "segments": []}
 
     def get_facebook_comments(self, post_id: str, count: int = 50) -> List[Dict[str, Any]]:
-        """Get comments on a Facebook post"""
-        endpoint = "v1/facebook/comments"
+        """Get comments on a Facebook post (real endpoint: /post/comments, param `url`).
+        Accepts a post URL or a bare post ID (ID alone 404s — needs URL)."""
+        endpoint = "v1/facebook/post/comments"
+        url = post_id if str(post_id).startswith(("http://", "https://")) else f"https://www.facebook.com/{post_id}"
         try:
-            response = self._make_request("GET", endpoint, params={"post_id": post_id, "count": count})
+            response = self._make_request("GET", endpoint, params={"url": url})
             return response.get("comments", [])
         except Exception as e:
             logger.warning(f"Failed to get Facebook comments for {post_id}: {e}")
@@ -1505,23 +1531,80 @@ class ScrapeCreatorsClient:
             raise
 
     def _normalize_generic_data(self, data: Dict[str, Any], platform: str) -> Dict[str, Any]:
-        """Generic normalizer for platforms without custom normalization"""
+        """Generic normalizer for platforms without custom normalization.
+        Facebook raw fields (verified live): followerCount/likeCount/
+        talkingAboutCount (camelCase), pageIntro (bio), category,
+        profilePicLarge/Medium (URL strings), id (numeric FB id)."""
         return {
             "user_id": data.get("id") or data.get("user_id") or data.get("handle"),
             "username": data.get("username") or data.get("handle") or data.get("id"),
             "display_name": data.get("name") or data.get("display_name") or data.get("full_name"),
-            "bio": data.get("bio") or data.get("description") or data.get("about"),
-            "follower_count": data.get("followers") or data.get("follower_count") or data.get("followers_count") or 0,
+            "bio": data.get("bio") or data.get("pageIntro") or data.get("description") or data.get("about"),
+            "follower_count": data.get("followerCount") or data.get("followers") or data.get("follower_count") or data.get("followers_count") or 0,
             "following_count": data.get("following") or data.get("following_count") or 0,
             "posts_count": data.get("posts_count") or data.get("media_count") or data.get("videos_count") or 0,
             "verified": data.get("verified") or data.get("is_verified") or False,
-            "profile_image_url": data.get("avatar") or data.get("profile_image_url") or data.get("avatar_url"),
+            "profile_image_url": data.get("profilePicLarge") or data.get("profilePicMedium") or data.get("avatar") or data.get("profile_image_url") or data.get("avatar_url"),
+            # Facebook-specific (real, from API — no fabrication):
+            "like_count": data.get("likeCount"),
+            "talking_about_count": data.get("talkingAboutCount"),
+            "category": data.get("category"),
+            "gender": data.get("gender"),
+            "profile_url": data.get("url"),
             "metadata": {
                 "platform": platform,
                 "is_real_data": True
             },
             "raw": data
         }
+
+    def collect_facebook_deep(self, username: str, max_post_pages: int = 3, max_comment_posts: int = 2) -> Dict[str, Any]:
+        """Deep Facebook collection: profile + paginated posts + reels + photos
+        + events + comments on top posts. Credit-aware: ~4 + pages + comments
+        credits. Every sub-call degrades gracefully (empty list, not crash),
+        so one failing endpoint never kills the whole profile."""
+        fb_url = self._fb_url(username)
+        deep: Dict[str, Any] = {"profile": None, "posts": [], "reels": [], "photos": [], "events": [], "comments": [], "errors": []}
+        try:
+            deep["profile"] = self.get_facebook_profile(username)
+        except Exception as e:
+            deep["errors"].append(f"profile: {str(e)[:200]}")
+        # Posts with cursor pagination (3/page per API)
+        cursor = None
+        for _ in range(max_post_pages):
+            try:
+                params = {"url": fb_url}
+                if cursor:
+                    params["cursor"] = cursor
+                resp = self._make_request("GET", "v1/facebook/profile/posts", params=params)
+                batch = resp.get("posts", [])
+                if not batch:
+                    break
+                deep["posts"].extend(batch)
+                cursor = resp.get("cursor")
+                if not cursor:
+                    break
+            except Exception as e:
+                deep["errors"].append(f"posts: {str(e)[:200]}")
+                break
+        # Reels / photos / events (1 page each)
+        for key, endpoint in [("reels", "v1/facebook/profile/reels"), ("photos", "v1/facebook/profile/photos"), ("events", "v1/facebook/profile/events")]:
+            try:
+                resp = self._make_request("GET", endpoint, params={"url": fb_url})
+                deep[key] = resp.get(key, [])
+            except Exception as e:
+                deep["errors"].append(f"{key}: {str(e)[:200]}")
+        # Comments on the most recent posts that have comments
+        for post in deep["posts"][:max_comment_posts]:
+            post_url = post.get("url") or post.get("permalink")
+            if not post_url or str(post.get("commentCount", "0")) == "0":
+                continue
+            try:
+                resp = self._make_request("GET", "v1/facebook/post/comments", params={"url": post_url})
+                deep["comments"].extend(resp.get("comments", []))
+            except Exception as e:
+                deep["errors"].append(f"comments: {str(e)[:200]}")
+        return deep
 
 
     

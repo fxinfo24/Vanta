@@ -107,9 +107,12 @@ class SocialMediaAnalyzer:
             results = {
                 "profile_info": {
                     "username": profile_data.get("username", profile_id),
-                    "followers": profile_data.get("followers_count", 0),
-                    "following": profile_data.get("following_count", 0),
-                    "posts": profile_data.get("posts_count", 0),
+                    "followers": profile_data.get("follower_count", profile_data.get("followers_count", 0)) or 0,
+                    "following": profile_data.get("following_count", 0) or 0,
+                    "posts": profile_data.get("posts_count", 0) or 0,
+                    "like_count": profile_data.get("like_count"),
+                    "talking_about_count": profile_data.get("talking_about_count"),
+                    "category": profile_data.get("category"),
                     "display_name": profile_data.get("display_name"),
                     "bio": profile_data.get("bio"),
                     "profile_image_url": profile_data.get("profile_image_url") or profile_data.get("avatar_url"),

@@ -211,6 +211,16 @@ class DataCollector:
                     transcript = getattr(self.scrape_client, "get_youtube_transcript", lambda x: "")(videos[0]["video_id"])
                     deep_data["latest_video_transcript"] = transcript
 
+            # Facebook Deep (profile + paginated posts + reels + photos + comments)
+            elif self.platform == "facebook":
+                deep = self.scrape_client.collect_facebook_deep(profile_id)
+                posts = deep.get("posts") or []
+                deep_data["facebook_reels"] = deep.get("reels") or []
+                deep_data["facebook_photos"] = deep.get("photos") or []
+                deep_data["facebook_events"] = deep.get("events") or []
+                deep_data["facebook_comments"] = deep.get("comments") or []
+                deep_data["facebook_collection_errors"] = deep.get("errors") or []
+
             # Twitter/X Standard
             elif self.platform == "twitter":
                 posts = self.scrape_client.get_twitter_posts(profile_id, count=20)
