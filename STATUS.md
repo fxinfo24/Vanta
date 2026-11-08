@@ -43,7 +43,7 @@ Two products consolidated into **one Flask app** (`app/web/app.py:create_app()`)
 | Apify | Fallback when ScrapeCreators credits exhaust (402 → `CREDITS_EXHAUSTED`) | Wired; billing-blocked |
 | OpenRouter | LLM analysis (downstream, orthogonal to scraping) | Working (Nemotron free) |
 | Google Fact Check / NewsAPI | Verification Layer 4/5 | Working (keys in `.env`); embeddings via OpenRouter |
-| ClaimBuster | Check-worthiness scoring | **No key** — must be created by the account owner at claimbuster.org (needs email verification; cannot be done by the agent). Integration is ready; paste `CLAIMBUSTER_API_KEY` into `.env` to enable |
+| ClaimBuster | Check-worthiness scoring | **No key yet.** Client fixed to the real v2 API (`POST claimbuster.org/api/v2/score/text/`, verified live; old code POSTed a non-existent path) and TLS fixed via `truststore` (their Internet2 InCommon CA is not in certifi, so `requests` fails verification everywhere). Registration form is at `claimbuster.org/api/request/key/` but is gated by **reCAPTCHA**, which the agent cannot bypass — the account owner must submit it (~2 min: name, `videotaletactician@gmail.com`, title, org, project URL `https://github.com/fxinfo24/Vanta`, usage description), verify the email, then paste `CLAIMBUSTER_API_KEY` into `.env`. Until then the client honestly returns `score: None, source: "unavailable"` (never mock scores) |
 
 Not implemented in this repo: auth on Flask routes, WebSockets, team/billing endpoints
 (`app/enterprise/*` modules exist but are **not** wired to any route), official SDKs.

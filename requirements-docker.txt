@@ -19,6 +19,7 @@ alembic>=1.12.0
 
 # Data & Utilities
 requests>=2.25.0
+truststore>=0.10.0  # OS trust store: ClaimBuster (Internet2 InCommon CA) is not in certifi
 numpy>=1.26.0
 pandas>=1.5.0
 python-dateutil>=2.8.0

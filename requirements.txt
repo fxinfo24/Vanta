@@ -27,6 +27,7 @@ alembic>=1.12.0
 
 # Basic utilities
 requests>=2.25.0
+truststore>=0.10.0  # OS trust store: ClaimBuster (Internet2 InCommon CA) is not in certifi
 PyJWT==2.6.0
 
 # Excluded for faster builds:

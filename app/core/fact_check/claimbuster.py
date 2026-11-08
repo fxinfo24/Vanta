@@ -4,9 +4,18 @@ Check-worthy claim detection using ClaimBuster API
 """
 
 import os
-import requests
+import ssl
+import json
 import logging
+import urllib.request
+import urllib.error
 from typing import List, Dict, Any, Optional
+
+try:
+    import truststore  # OS trust store (see _ssl_context)
+    _HAS_TRUSTSTORE = True
+except ImportError:
+    _HAS_TRUSTSTORE = False
 
 logger = logging.getLogger("Vanta.ClaimBuster")
 
@@ -21,7 +30,10 @@ class ClaimBusterClient:
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("CLAIMBUSTER_API_KEY")
-        self.base_url = "https://idir.uta.edu/claimbuster/api/v2"
+        # Verified live: claimbuster.org/api/v2/* is the working host
+        # (idir.uta.edu variants 404; claimbuster.org returns 401 with a
+        # bad key, proving the endpoint exists).
+        self.base_url = "https://claimbuster.org/api/v2"
         
         if not self.api_key:
             logger.warning("ClaimBuster API key not configured")
@@ -45,22 +57,27 @@ class ClaimBusterClient:
                 "x-api-key": self.api_key,
                 "Content-Type": "application/json"
             }
-            
-            payload = {
-                "text": text,
-                "language": language
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/score",
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                score = data.get("score", 0.0)
+            # Real v2 API (docs + live probe): POST /score/text/ with
+            # {"input_text": ...}. (Old code POSTed {"text","language"} to
+            # /score - a path that does not exist.)
+            # urllib (not requests) so we can verify TLS against the OS
+            # trust store: claimbuster.org's Internet2 InCommon CA is not
+            # in certifi's Mozilla bundle, so requests fails verification
+            # everywhere (verified live). truststore fixes that.
+            req = urllib.request.Request(
+                f"{self.base_url}/score/text/",
+                data=json.dumps({"input_text": text}).encode(),
+                headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req, context=self._ssl_context(), timeout=15) as resp:
+                    status, body = resp.status, resp.read().decode()
+            except urllib.error.HTTPError as e:
+                status, body = e.code, e.read().decode()
+            if status == 200:
+                data = json.loads(body)
+                score = self._extract_score(data)
+                if score is None:
+                    return self._unavailable_score(text, language, "unrecognized response shape")
                 return {
                     "score": score,
                     "is_checkworthy": score >= 0.5,
@@ -68,8 +85,8 @@ class ClaimBusterClient:
                     "explanation": self._get_explanation(score),
                     "source": "claimbuster"
                 }
-            logger.error(f"ClaimBuster API error: {response.status_code}")
-            return self._unavailable_score(text, language, f"HTTP {response.status_code}")
+            logger.error(f"ClaimBuster API error: {status}")
+            return self._unavailable_score(text, language, f"HTTP {status}")
         except Exception as e:
             logger.error(f"ClaimBuster API call failed: {e}")
             return self._unavailable_score(text, language, str(e))
@@ -84,6 +101,32 @@ class ClaimBusterClient:
         
         return results
     
+    @staticmethod
+    def _ssl_context() -> ssl.SSLContext:
+        if _HAS_TRUSTSTORE:
+            return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        return ssl.create_default_context()
+
+    @staticmethod
+    def _extract_score(data: Any) -> float:
+        """Defensively parse the v2 score response. Exact envelope varies by
+        endpoint version; accept the documented shapes and fail loudly
+        (return None -> unavailable) rather than inventing a number."""
+        if isinstance(data, (int, float)):
+            return float(data)
+        if isinstance(data, dict):
+            for key in ("score", "checkworthiness_score", "claim_score"):
+                if isinstance(data.get(key), (int, float)):
+                    return float(data[key])
+            for key in ("results", "data", "scores"):
+                inner = data.get(key)
+                if isinstance(inner, list) and inner:
+                    return ClaimBusterClient._extract_score(inner[0])
+                if isinstance(inner, dict):
+                    return ClaimBusterClient._extract_score(inner)
+        logger.warning(f"Unrecognized ClaimBuster response shape: {str(data)[:200]}")
+        return None
+
     def _unavailable_score(self, text: str, language: str, reason: str = "no API key") -> Dict[str, Any]:
         """
         HONEST unavailable result. The old _mock_score returned heuristic
