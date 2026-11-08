@@ -193,11 +193,20 @@ class ScrapeCreatorsClient:
 
     # --- NEW PLATFORMS (from ScrapeCreators docs) ---
     
+    @staticmethod
+    def _fb_url(username: str) -> str:
+        """ScrapeCreators Facebook API needs a full URL param, not a handle.
+        Accept a bare handle ('AzizMdArif'), '@AzizMdArif', or a full URL."""
+        u = (username or "").strip()
+        if u.startswith(("http://", "https://")):
+            return u
+        return f"https://www.facebook.com/{u.lstrip('@')}"
+
     def get_facebook_profile(self, username: str) -> Dict[str, Any]:
-        """Get Facebook profile data"""
+        """Get Facebook profile data (verified: param is `url`, not `handle`)"""
         endpoint = "v1/facebook/profile"
         try:
-            response = self._make_request("GET", endpoint, params={"handle": username})
+            response = self._make_request("GET", endpoint, params={"url": self._fb_url(username)})
             return self._normalize_generic_data(response, "facebook")
         except Exception as e:
             logger.error(f"Failed to get Facebook profile {username}: {e}")
@@ -931,20 +940,20 @@ class ScrapeCreatorsClient:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def get_facebook_reels(self, username: str, count: int = 20) -> List[Dict[str, Any]]:
-        """Get Facebook reels for a user"""
-        endpoint = "v1/facebook/profile-reels"
+        """Get Facebook reels for a user (real endpoint: /profile/reels, param `url`)"""
+        endpoint = "v1/facebook/profile/reels"
         try:
-            response = self._make_request("GET", endpoint, params={"handle": username, "count": count})
+            response = self._make_request("GET", endpoint, params={"url": self._fb_url(username)})
             return response.get("reels", [])
         except Exception as e:
             logger.warning(f"Failed to get Facebook reels for {username}: {e}")
             return []
 
     def get_facebook_posts(self, username: str, count: int = 20) -> List[Dict[str, Any]]:
-        """Get Facebook posts for a user"""
-        endpoint = "v1/facebook/profile-posts"
+        """Get Facebook posts for a user (real endpoint: /profile/posts, param `url`, 3/page)"""
+        endpoint = "v1/facebook/profile/posts"
         try:
-            response = self._make_request("GET", endpoint, params={"handle": username, "count": count})
+            response = self._make_request("GET", endpoint, params={"url": self._fb_url(username)})
             return response.get("posts", [])
         except Exception as e:
             logger.warning(f"Failed to get Facebook posts for {username}: {e}")
