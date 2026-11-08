@@ -122,27 +122,31 @@ class GoogleFactCheckClient(FactCheckClient):
             
             data = response.json()
             
-            # Parse claims
+            # Parse claims.
+            # Real API shape (verified live): 
+            #   {"text": claim text, "claimant": ..., "claimReview": [{publisher, url, title, reviewDate, textualRating}]}
+            # Older code assumed a nested {"claim": {...}} wrapper that the API never returns,
+            # so claim text was always "" and the matcher dropped every Google result (NO_MATCH).
             raw_results = []
             for item in data.get("claims", []):
-                claim = item.get("claim", {})
-                claim_review = item.get("claimReview", [{}])[0] if item.get("claimReview") else {}
-                
-                result = {
-                    "id": item.get("name", ""),
-                    "text": claim.get("text", ""),
-                    "claimant": claim.get("claimant", ""),
-                    "claim_date": claim.get("claimDate", ""),
-                    "verdict": claim_review.get("textualRating", ""),
-                    "verdict_date": claim_review.get("reviewDate", ""),
-                    "explanation": "",  # Google doesn't provide this directly
-                    "reviewer": claim_review.get("publisher", {}).get("name", ""),
-                    "url": claim_review.get("url", ""),
-                    "languages": [language],
-                    "categories": [],
-                    "similarity_score": 0.0  # Will be calculated by matcher
-                }
-                raw_results.append(result)
+                claim_text = item.get("text", "") or item.get("claim", {}).get("text", "")
+                reviews = item.get("claimReview") or [{}]
+                for claim_review in reviews:
+                    result = {
+                        "id": item.get("name", ""),
+                        "text": claim_text,
+                        "claimant": item.get("claimant", ""),
+                        "claim_date": item.get("claimDate", ""),
+                        "verdict": claim_review.get("textualRating", ""),
+                        "verdict_date": claim_review.get("reviewDate", ""),
+                        "explanation": claim_review.get("title", ""),  # review title is the closest summary Google gives
+                        "reviewer": claim_review.get("publisher", {}).get("name", ""),
+                        "url": claim_review.get("url", ""),
+                        "languages": [language],
+                        "categories": [],
+                        "similarity_score": 0.0  # Will be calculated by matcher
+                    }
+                    raw_results.append(result)
             
             logger.info(f"Google Fact Check found {len(raw_results)} results for: {claim_text[:50]}...")
             return self.normalize_results(raw_results)

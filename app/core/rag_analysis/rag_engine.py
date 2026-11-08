@@ -22,13 +22,17 @@ class RAGEngine:
     
     def __init__(self,
                  provider: str = "openrouter",
-                 model: str = "anthropic/claude-3.5-sonnet",
+                 model: str = None,
                  temperature: float = 0.1,
                  min_evidence_count: int = 2,
                  min_grounding_score: float = 0.5):
         
         self.provider = LLMProvider(provider)
-        self.model = model
+        # Default to the configured OpenRouter model (Nemotron free by default in
+        # openrouter_client). The previous hardcoded anthropic/claude-3.5-sonnet
+        # 404s on OpenRouter, so Layer 6 always failed with "LLM call failed: 404".
+        import os as _os
+        self.model = model or _os.getenv("OPENROUTER_MODEL") or "nvidia/nemotron-3-ultra-550b-a55b:free"
         self.temperature = temperature
         self.min_evidence_count = min_evidence_count
         self.min_grounding_score = min_grounding_score
@@ -117,15 +121,20 @@ class RAGEngine:
             if not verification.evidence_chain:
                 verification.evidence_chain = {}
             
-            verification.evidence_chain["layer_6"] = {
-                "verdict": result["verdict"],
-                "confidence": result["confidence"],
-                "reasoning": result["reasoning"],
-                "citations": result["citations"],
-                "grounding_score": result["grounding_score"],
-                "evidence_count": result["evidence_count"],
-                "model_used": result.get("model_used", ""),
-                "processed_at": result["processed_at"]
+            # Reassign (not in-place mutate): SQLAlchemy JSON columns don't detect
+            # in-place dict mutation, so layer_6 would be lost on commit.
+            verification.evidence_chain = {
+                **verification.evidence_chain,
+                "layer_6": {
+                    "verdict": result["verdict"],
+                    "confidence": result["confidence"],
+                    "reasoning": result["reasoning"],
+                    "citations": result["citations"],
+                    "grounding_score": result["grounding_score"],
+                    "evidence_count": result["evidence_count"],
+                    "model_used": result.get("model_used", ""),
+                    "processed_at": result["processed_at"]
+                }
             }
             
             # Update composite score
@@ -151,8 +160,16 @@ class RAGEngine:
                 "DISPUTED": VerificationStatus.MISLEADING
             }
             
+            # Do not let an evidence-less Layer 6 (UNVERIFIABLE) overwrite a concrete
+            # Layer 4 verdict (e.g. VERIFIED_FALSE from Google Fact Check). Layer 6's
+            # UNVERIFIABLE means "no RAG evidence", not "the fact-check was wrong".
+            # Only overwrite when Layer 6 is concrete, or when there is no concrete verdict yet.
+            concrete = {"VERIFIED_TRUE", "VERIFIED_FALSE", "MISLEADING", "DISPUTED"}
+            existing = verification.verification_status
+            existing_is_concrete = existing is not None and existing != VerificationStatus.UNVERIFIABLE
             if result["verdict"] in verdict_map:
-                verification.verification_status = verdict_map[result["verdict"]]
+                if result["verdict"] in concrete or not existing_is_concrete:
+                    verification.verification_status = verdict_map[result["verdict"]]
             verification.status = verification.status_value if hasattr(verification, 'status_value') else None
             
             verification.completed_at = datetime.utcnow()

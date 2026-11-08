@@ -526,11 +526,16 @@ def _run_claim_pipeline(claim):
             vr.composite_verification_score = scored["confidence_score"]
             if not vr.evidence_chain:
                 vr.evidence_chain = {}
-            vr.evidence_chain["layer_7"] = {
-                "verdict": scored["verdict"],
-                "needs_human_review": scored["needs_human_review"],
-                "breakdown": scored["breakdown"],
-                "scored_at": scored["scored_at"],
+            # Reassign (not in-place mutate): SQLAlchemy JSON columns don't detect
+            # in-place dict mutation, so layer_7 would be lost on commit.
+            vr.evidence_chain = {
+                **vr.evidence_chain,
+                "layer_7": {
+                    "verdict": scored["verdict"],
+                    "needs_human_review": scored["needs_human_review"],
+                    "breakdown": scored["breakdown"],
+                    "scored_at": scored["scored_at"],
+                }
             }
             db.session.commit()
             summary["layers"]["confidence"] = scored["verdict"]

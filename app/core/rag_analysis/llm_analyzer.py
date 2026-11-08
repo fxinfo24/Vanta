@@ -39,13 +39,15 @@ class LLMAnalyzer:
     
     def __init__(self, 
                  provider: LLMProvider = LLMProvider.OPENROUTER,
-                 model: str = "anthropic/claude-3.5-sonnet",
+                 model: str = None,
                  temperature: float = 0.1,
                  max_tokens: int = 1000,
                  api_key: Optional[str] = None):
         
         self.provider = provider
-        self.model = model
+        # Same default as RAGEngine/openrouter_client: configured model or Nemotron free.
+        # (Previously hardcoded anthropic/claude-3.5-sonnet, which 404s on OpenRouter.)
+        self.model = model or os.getenv("OPENROUTER_MODEL") or "nvidia/nemotron-3-ultra-550b-a55b:free"
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.api_key = api_key or self._get_api_key()

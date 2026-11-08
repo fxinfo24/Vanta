@@ -58,7 +58,7 @@ class FactCheckEngine:
                 fact_checks = client.search_claim(
                     claim_text=claim.claim_text,
                     language=language,
-                    max_age_days=365  # 1 year
+                    max_age_days=3650  # 10 years: fact-checks for historical claims (e.g. 2020 election) fall outside a 1-year window
                 )
                 
                 logger.info(f"Source {source_name} found {len(fact_checks)} results")

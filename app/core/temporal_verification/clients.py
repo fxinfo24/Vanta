@@ -302,9 +302,13 @@ class NewsAPIClient:
     
     def _extract_search_terms(self, text: str) -> str:
         """Extract search terms from claim text"""
-        # Remove common words
-        stopwords = {"the", "is", "are", "was", "were", "has", "have", "that", "this"}
-        words = [w for w in text.lower().split() if w not in stopwords]
+        # Remove common words + punctuation. NewsAPI treats filler words (was/and/us)
+        # as required terms and returns 0 results for e.g. "2020 us election was stolen".
+        stopwords = {"the", "is", "are", "was", "were", "has", "have", "that", "this",
+                     "and", "actually", "for", "with", "from", "were", "been", "will"}
+        import re as _re
+        cleaned = _re.sub(r"[^\w\s]", " ", text.lower())
+        words = [w for w in cleaned.split() if w not in stopwords and len(w) > 2]
         return " ".join(words[:5])
     
     def _calculate_news_relevance(self, claim_text: str, article: Dict) -> float:

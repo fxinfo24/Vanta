@@ -408,13 +408,18 @@ class TemporalVerifier:
             if not verification.evidence_chain:
                 verification.evidence_chain = {}
             
-            verification.evidence_chain["layer_5"] = {
-                "temporal_plausibility": result["temporal_plausibility"],
-                "confidence": result["confidence"],
-                "claim_date": result["claim_date"],
-                "verifications": result["verifications"],
-                "sources_used": result["sources_used"],
-                "processed_at": result["processed_at"]
+            # Reassign (not in-place mutate): SQLAlchemy JSON columns don't detect
+            # in-place dict mutation, so layer_5 would be lost on commit.
+            verification.evidence_chain = {
+                **verification.evidence_chain,
+                "layer_5": {
+                    "temporal_plausibility": result["temporal_plausibility"],
+                    "confidence": result["confidence"],
+                    "claim_date": result["claim_date"],
+                    "verifications": result["verifications"],
+                    "sources_used": result["sources_used"],
+                    "processed_at": result["processed_at"]
+                }
             }
             
             # Update composite score (weighted with Layer 4)

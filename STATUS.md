@@ -33,14 +33,7 @@ Two products consolidated into **one Flask app** (`app/web/app.py:create_app()`)
 - Tests: `pytest` 36 passed / 4 failed (pre-existing, unrelated NLP/analyzer tests).
   `tsc --noEmit` clean. ESLint: 103 pre-existing warnings, 0 errors.
 - 7-layer verification E2E (verified live, Nov 2026): ingest → extract (2 FACTUAL claims,
-  check-worthiness 0.6) → Layers 4–7 all execute. **But final verdict is `UNVERIFIABLE /
-  INSUFFICIENT` (composite 0.125)** on a true claim — because Layer 4 runs on mock
-  (`GOOGLE_FACT_CHECK_API_KEY` absent → `NO_MATCH`), Layer 5 has no `NEWSAPI_KEY`, and
-  Layer 6 is grounding-gated with no evidence corpus. The pipeline runs; it just cannot
-  verify anything real yet. Live-DB schema bug found + fixed: `social_media_posts.id` was
-  INTEGER (old schema) vs String PK model → every `/verification/post` 500'd with
-  `datatype mismatch`; verification tables were empty so they were dropped + recreated
-  (backup: `data/vanta.db.bak-*`).
+  check-worthiness 0.6) → Layers 4–7 all execute, evidence_chain persists `layer_4..7`. Keys now wired: `GOOGLE_FACT_CHECK_API_KEY` + `NEWSAPI_KEY` in `.env` (never commit). **Proven real verdict:** claim "2020 US election was stolen / Trump won" → Layer 4 `VERIFIED_FALSE` matched to **USA Today** ("President Donald Trump did not win 2020 election", similarity 0.347), final status `VERIFIED_FALSE`, composite 0.625, Layer 7 `CONFIDENT`. Layer 5 NewsAPI found 16 real articles; Layer 6 Nemotron returned grounded reasoning. Caveats: Google ranking is flaky (same claim got `NO_MATCH` on a re-run), matcher is lexical not semantic, Layer 6 has no external corpus (only L4/L5 evidence), no human-review endpoint (flag only). Live-DB schema bug found + fixed: `social_media_posts.id` was INTEGER (old schema) vs String PK model → every `/verification/post` 500'd with `datatype mismatch`; verification tables were empty so they were dropped + recreated (backup: `data/vanta.db.bak`). Bugs fixed Nov 2026: Google client parsed a non-existent nested `claim` wrapper (claim text always empty → matcher dropped everything); engine `maxAgeDays` 365→3650; Layer 6 hardcoded `claude-3.5-sonnet` (404) → `OPENROUTER_MODEL`/Nemotron; Layer 6 no longer overwrites a concrete L4 verdict with evidence-less `UNVERIFIABLE`; JSON `evidence_chain` in-place mutation was being lost (now reassigned in L5/L6/L7); NewsAPI stopwords fixed.
 
 ## Data providers (honest)
 
