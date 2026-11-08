@@ -71,6 +71,10 @@ class ScrapeCreatorsClient:
             
             if response.status_code == 429:
                 raise RateLimitError("Rate limit exceeded")
+            elif response.status_code == 402:
+                # Distinct marker so callers (DeepCollector) can fall back to Apify.
+                # NOTE: do NOT match on 'credit' in body — successful 200s contain credits_remaining.
+                raise ScrapeCreatorsError(f"CREDITS_EXHAUSTED: {response.status_code} - {response.text[:200]}")
             elif response.status_code == 401:
                 raise ScrapeCreatorsError("Invalid API key")
             elif response.status_code == 404:
@@ -944,7 +948,7 @@ class ScrapeCreatorsClient:
         endpoint = "v1/facebook/profile/reels"
         try:
             reels, cursor = [], None
-            for _ in range(3):  # max 3 pages to bound credit use
+            for _ in range(7):  # max 7 pages (=count cap) to bound credit use
                 params = {"url": self._fb_url(username)}
                 if cursor:
                     params["cursor"] = cursor
@@ -959,14 +963,14 @@ class ScrapeCreatorsClient:
             return reels[:count]
         except Exception as e:
             logger.warning(f"Failed to get Facebook reels for {username}: {e}")
-            return []
+            return reels[:count]  # keep partial results (e.g. credits ran out mid-pagination)
 
     def get_facebook_posts(self, username: str, count: int = 20) -> List[Dict[str, Any]]:
         """Get Facebook posts for a user (real endpoint: /profile/posts, param `url`, 3/page, paginated)"""
         endpoint = "v1/facebook/profile/posts"
         try:
             posts, cursor = [], None
-            for _ in range(4):  # max 4 pages = 12 posts, bounds credit use
+            for _ in range(11):  # max 11 pages * 3/page = 33 posts, bounds credit use
                 params = {"url": self._fb_url(username)}
                 if cursor:
                     params["cursor"] = cursor
@@ -981,7 +985,7 @@ class ScrapeCreatorsClient:
             return posts[:count]
         except Exception as e:
             logger.warning(f"Failed to get Facebook posts for {username}: {e}")
-            return []
+            return posts[:count]  # keep partial results (e.g. credits ran out mid-pagination)
 
     def get_facebook_group_posts(self, group_id: str, count: int = 20) -> List[Dict[str, Any]]:
         """Get posts from a Facebook group"""
@@ -1558,7 +1562,7 @@ class ScrapeCreatorsClient:
             "raw": data
         }
 
-    def collect_facebook_deep(self, username: str, max_post_pages: int = 3, max_comment_posts: int = 2) -> Dict[str, Any]:
+    def collect_facebook_deep(self, username: str, max_post_pages: int = 11, max_comment_posts: int = 2) -> Dict[str, Any]:
         """Deep Facebook collection: profile + paginated posts + reels + photos
         + events + comments on top posts. Credit-aware: ~4 + pages + comments
         credits. Every sub-call degrades gracefully (empty list, not crash),
@@ -1826,7 +1830,7 @@ class ApifyError(Exception):
 APIFY_ACTORS = {
     "tiktok": "clockworks/tiktok-scraper",
     "instagram": "apify/instagram-scraper",
-    "facebook": "apify/facebook-scraper",
+    "facebook": "apify/facebook-posts-scraper",  # verified live 200 via Apify API; old apify/facebook-scraper 404s
     "youtube": "streamers/youtube-scraper",
     "twitter": "quikr/twitter-scraper",
 }
@@ -1865,7 +1869,7 @@ class ApifyClient:
             raise ApifyError("Invalid Apify token (401)")
         if r.status_code == 403:
             raise ApifyError(f"Actor not approved / forbidden (403): {r.text[:200]}")
-        if r.status_code != 200:
+        if r.status_code not in (200, 201):  # 201 = run accepted, items in body (facebook-posts-scraper)
             raise ApifyError(f"Apify {r.status_code}: {r.text[:300]}")
         data = r.json()
         return data if isinstance(data, list) else data.get("data", {}).get("items", data)
@@ -1882,6 +1886,43 @@ class ApifyClient:
         actor_input = {"startUrls": [{"url": profile_url}], "maxResults": max_results, "profiles": [username]}
         items = self.run_actor(actor_id, actor_input)
         return {"platform": platform, "username": username, "actor": actor_id, "items": items, "count": len(items) if isinstance(items, list) else 0}
+
+    def scrape_facebook(self, username: str, max_results: int = 30) -> Dict[str, Any]:
+        """Fallback Facebook collection via apify/facebook-posts-scraper (verified live).
+        Returns {'profile': {...}, 'posts': [...]} normalized to the dossier shape.
+        Counts are only set when the actor actually returns them — never invented."""
+        actor_id = os.getenv("APIFY_ACTOR_FACEBOOK", APIFY_ACTORS.get("facebook"))
+        if not actor_id:
+            raise ApifyError("No Apify actor configured for 'facebook' (set APIFY_ACTOR_FACEBOOK)")
+        profile_url = f"https://www.facebook.com/{username.lstrip('@')}"
+        items = self.run_actor(actor_id, {"startUrls": [{"url": profile_url}], "maxResults": max_results})
+        if not isinstance(items, list):
+            items = []
+        posts = []
+        profile = {"username": username, "profile_url": profile_url, "metadata": {"platform": "facebook", "is_real_data": True, "provider": "apify", "actor": actor_id}}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            author = it.get("author") or it.get("user") or {}
+            if isinstance(author, dict):
+                profile.setdefault("display_name", author.get("name") or author.get("fullName"))
+                profile.setdefault("profile_image_url", author.get("profilePicture") or author.get("profilePic"))
+            text = it.get("text") or it.get("caption") or it.get("content") or ""
+            posts.append({
+                "id": it.get("id") or it.get("postId") or it.get("url"),
+                "text": text, "content": text,
+                "url": it.get("url") or it.get("postUrl"),
+                "created_at": it.get("time") or it.get("timestamp") or it.get("date"),
+                "likes_count": it.get("likes") or it.get("likesCount"),
+                "comments_count": it.get("commentsCount") or it.get("comments"),
+                "shares_count": it.get("shares") or it.get("sharesCount"),
+            })
+        # Only surface counts the actor returned
+        first = items[0] if items and isinstance(items[0], dict) else {}
+        for src, dst in [("followerCount", "follower_count"), ("followers", "follower_count"), ("likeCount", "like_count")]:
+            if first.get(src) is not None:
+                profile[dst] = first[src]
+        return {"profile": profile, "posts": posts, "actor": actor_id, "count": len(posts)}
 
 
 def get_apify_client():

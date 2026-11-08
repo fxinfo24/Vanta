@@ -8,8 +8,11 @@ class ApiService {
   private baseURL: string;
 
   constructor() {
-    // In production (Vercel), set VITE_API_BASE_URL to your Railway backend base URL,
-    // e.g. https://<service>.up.railway.app
+    // In production (Vercel), set VITE_API_BASE_URL to the live backend base URL
+    // (e.g. https://<backend-host>/api) in the Vercel project settings.
+    // NOTE: no backend URL is hardcoded here — a hardcoded host previously pointed
+    // at a dead Railway deployment and 404'd every call. Deploy the Flask backend
+    // (see Dockerfile) first, then set the env var and redeploy the frontend.
     // In development, default to Vite proxy for /api.
     this.baseURL = import.meta.env.VITE_API_BASE_URL || '/api';
 

@@ -52,7 +52,7 @@ const ResultView: React.FC = () => {
 
   const handleExport = (format: string) => {
     // Construct absolute URL using the API service's base URL logic
-    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api'; // same fallback as services/api.ts
     // Ensure we don't double slash
     const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
     window.open(`${cleanBase}/tasks/${id}/download?format=${format}`, '_blank');

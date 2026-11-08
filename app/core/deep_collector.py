@@ -231,6 +231,40 @@ class DeepDossierCollector:
         """Initialize with ScrapeCreators client"""
         self.client = client or get_scrape_client()
         self.collection_start_time = None
+
+    def _apify_facebook_fallback(self, username: str, result: Dict[str, Any]) -> bool:
+        """Collect Facebook profile+posts via Apify when ScrapeCreators credits are out.
+        Returns True on success (result['profile']/['content'] populated)."""
+        try:
+            from .scrape_client import get_apify_client
+            apify = get_apify_client()
+            if not apify.is_configured:
+                logger.warning("Apify fallback unavailable: APIFY_API_TOKEN not configured")
+                return False
+            data = apify.scrape_facebook(username, max_results=30)
+            if not data.get("posts") and not data.get("profile"):
+                return False
+            result['profile'] = data.get('profile')
+            result['content'] = data.get('posts') or []
+            result['additional_data']['provider'] = 'apify'
+            result['additional_data']['apify_actor'] = data.get('actor')
+            result['additional_data']['apify_fallback'] = True
+            logger.info(f"Apify Facebook fallback collected {len(result['content'])} posts for {username}")
+            return True
+        except Exception as e:
+            logger.warning(f"Apify Facebook fallback failed for {username}: {e}")
+            return False
+
+    def _finalize_dossier(self, result: Dict[str, Any], api_calls: int) -> Dict[str, Any]:
+        """Fill statistics on a dossier and return it (used by the Apify fallback path)."""
+        result['statistics']['api_calls_made'] = api_calls
+        result['statistics']['content_items_collected'] = len(result.get('content') or [])
+        result['statistics']['comments_collected'] = result.get('comments_analysis', {}).get('total_comments_collected', 0)
+        result['statistics']['transcripts_collected'] = len(result.get('transcripts') or [])
+        if self.collection_start_time:
+            result['collection_time_seconds'] = round(time.time() - self.collection_start_time, 2)
+        logger.info(f"Deep dossier completed (fallback path) in {result['collection_time_seconds']}s with {api_calls} API calls")
+        return result
         
     def quick_scan(self, platform: str, username: str) -> Dict[str, Any]:
         """
@@ -358,6 +392,17 @@ class DeepDossierCollector:
                 api_calls += 1
                 logger.info(f"Profile collected for {username}")
         except Exception as e:
+            # Facebook + ScrapeCreators credits exhausted -> Apify fallback
+            # (skips Smart Resolution, which would also burn ScrapeCreators credits)
+            if platform == 'facebook' and 'CREDITS_EXHAUSTED' in str(e):
+                logger.warning(f"ScrapeCreators credits exhausted for {username}; trying Apify Facebook fallback...")
+                if self._apify_facebook_fallback(username, result):
+                    result['errors'].append('ScrapeCreators credits exhausted; served via Apify fallback')
+                    api_calls += 1
+                    # Skip ScrapeCreators deep methods/comments/cross-platform (all would fail)
+                    return self._finalize_dossier(result, api_calls)
+                result['errors'].append(f"Profile error (credits exhausted, Apify fallback failed): {str(e)}")
+                return self._finalize_dossier(result, api_calls)
             # Smart Resolution for "Profile Not Found"
             logger.warning(f"Direct profile fetch failed for {username} on {platform}: {e}. Attempting Smart Resolution...")
             
