@@ -313,71 +313,6 @@ class ScrapeCreatorsClient:
             logger.error(f"Failed to get Amazon Shop profile {username}: {e}")
             raise
 
-    # --- Search & Link-in-Bio Profiles ---
-
-    def get_google_profile(self, query: str) -> Dict[str, Any]:
-        """Get Google Knowledge Graph/Search profile"""
-        try:
-            # Use search as proxy for profile
-            data = self.search_google(query, count=1)
-            results = data.get('results', [])
-            if not results:
-                return {"platform": "google", "username": query, "error": "Not found"}
-            
-            top_result = results[0]
-            return {
-                "platform": "google",
-                "username": query,
-                "display_name": top_result.get("title", query),
-                "bio": top_result.get("snippet", ""),
-                "website_url": top_result.get("link"),
-                "profile_image_url": None,
-                "raw_data": top_result
-            }
-        except Exception as e:
-            logger.error(f"Failed to get Google profile {query}: {e}")
-            return {}
-
-    def get_linktree_profile(self, username: str) -> Dict[str, Any]:
-        """Get Linktree profile data"""
-        endpoint = "v1/linktree/profile"
-        try:
-            response = self._make_request("GET", endpoint, params={"handle": username})
-            return self._normalize_generic_data(response, "linktree")
-        except Exception as e:
-            logger.warning(f"Failed to get Linktree profile {username}: {e}")
-            return {}
-
-    def get_komi_profile(self, username: str) -> Dict[str, Any]:
-        """Get Komi profile data"""
-        endpoint = "v1/komi/profile"
-        try:
-            response = self._make_request("GET", endpoint, params={"handle": username})
-            return self._normalize_generic_data(response, "komi")
-        except Exception as e:
-            logger.warning(f"Failed to get Komi profile {username}: {e}")
-            return {}
-
-    def get_pillar_profile(self, username: str) -> Dict[str, Any]:
-        """Get Pillar profile data"""
-        endpoint = "v1/pillar/profile"
-        try:
-            response = self._make_request("GET", endpoint, params={"handle": username})
-            return self._normalize_generic_data(response, "pillar")
-        except Exception as e:
-            logger.warning(f"Failed to get Pillar profile {username}: {e}")
-            return {}
-
-    def get_linkbio_profile(self, username: str) -> Dict[str, Any]:
-        """Get Linkbio profile data"""
-        endpoint = "v1/linkbio/profile"
-        try:
-            response = self._make_request("GET", endpoint, params={"handle": username})
-            return self._normalize_generic_data(response, "linkbio")
-        except Exception as e:
-            logger.warning(f"Failed to get Linkbio profile {username}: {e}")
-            return {}
-
     # --- Ad Libraries ---
     def get_facebook_ad_library(self, advertiser: str) -> Dict[str, Any]:
         """Get Facebook Ad Library data for an advertiser"""
@@ -1780,6 +1715,86 @@ class ScrapeCreatorsClient:
             "mentions": post.get("mentions", []),
             "raw_data": post
         }
+
+# =============================================================================
+# Apify Actor client (real integration)
+# =============================================================================
+# Apify = DATA COLLECTION (scraping). OpenRouter = LLM ANALYSIS. They are
+# orthogonal: Apify cannot do psychological/sentiment analysis, OpenRouter
+# cannot scrape profiles. Vanta uses both: Apify/ScrapeCreators fetch data,
+# OpenRouter analyses it.
+# Auth: Authorization: Bearer $APIFY_API_TOKEN (Console > Settings > Integrations)
+# Run: POST https://api.apify.com/v2/acts/{actorId}/run-sync-get-dataset-items
+class ApifyError(Exception):
+    pass
+
+
+# Verified public actors (Apify Store). Override any via APIFY_ACTOR_<PLATFORM>,
+# e.g. APIFY_ACTOR_TWITTER=someuser/twitter-scraper
+APIFY_ACTORS = {
+    "tiktok": "clockworks/tiktok-scraper",
+    "instagram": "apify/instagram-scraper",
+    "facebook": "apify/facebook-scraper",
+    "youtube": "streamers/youtube-scraper",
+    "twitter": "quikr/twitter-scraper",
+}
+
+
+class ApifyClient:
+    def __init__(self, token=None):
+        self.api_token = token or os.getenv("APIFY_API_TOKEN") or os.getenv("APIFY_TOKEN")
+        if self.api_token and self.api_token.startswith("your_"):
+            self.api_token = None
+        self.base_url = os.getenv("APIFY_BASE_URL", "https://api.apify.com/v2")
+        self.session = requests.Session()
+        if self.api_token:
+            self.session.headers.update({"Authorization": f"Bearer {self.api_token}"})
+
+    @property
+    def is_configured(self):
+        return bool(self.api_token)
+
+    def check_token(self):
+        """GET /users/me — cheap auth check, no Actor run / no cost."""
+        if not self.is_configured:
+            return {"configured": False, "valid": False}
+        r = self.session.get(f"{self.base_url}/users/me", timeout=15)
+        return {"configured": True, "valid": r.status_code == 200, "status": r.status_code,
+                "user": r.json().get("data", {}).get("username") if r.ok else None}
+
+    def run_actor(self, actor_id, actor_input, timeout=120):
+        """Synchronously run an Actor and return dataset items (list)."""
+        if not self.is_configured:
+            raise ApifyError("APIFY_API_TOKEN not configured")
+        actor = actor_id.replace("/", "~")  # API accepts user~name in path
+        url = f"{self.base_url}/acts/{actor}/run-sync-get-dataset-items"
+        r = self.session.post(url, json=actor_input, timeout=timeout)
+        if r.status_code == 401:
+            raise ApifyError("Invalid Apify token (401)")
+        if r.status_code == 403:
+            raise ApifyError(f"Actor not approved / forbidden (403): {r.text[:200]}")
+        if r.status_code != 200:
+            raise ApifyError(f"Apify {r.status_code}: {r.text[:300]}")
+        data = r.json()
+        return data if isinstance(data, list) else data.get("data", {}).get("items", data)
+
+    def scrape_profile(self, platform, username, max_results=20):
+        platform = platform.lower()
+        actor_id = os.getenv(f"APIFY_ACTOR_{platform.upper()}", APIFY_ACTORS.get(platform))
+        if not actor_id:
+            raise ApifyError(f"No Apify actor configured for '{platform}' (set APIFY_ACTOR_{platform.upper()})")
+        # Generic, actor-agnostic input: most scrapers accept startUrls/profile URLs.
+        # Actors needing a different schema can be swapped via env actor id and
+        # the caller can use run_actor() directly with the exact schema.
+        profile_url = f"https://{platform}.com/{username}"
+        actor_input = {"startUrls": [{"url": profile_url}], "maxResults": max_results, "profiles": [username]}
+        items = self.run_actor(actor_id, actor_input)
+        return {"platform": platform, "username": username, "actor": actor_id, "items": items, "count": len(items) if isinstance(items, list) else 0}
+
+
+def get_apify_client():
+    return ApifyClient()
+
 
 # Fallback mock client for testing when API key is not available
 class MockScrapeCreatorsClient:

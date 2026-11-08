@@ -142,6 +142,86 @@ class ApiService {
     }
   }
 
+  // Verification (Product B) — consolidated into the same Flask app
+  async createVerificationPost(payload: { platform?: string; profile_id?: string; text: string; author_name?: string; post_url?: string }): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.post('/verification/post', payload);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async createPostFromTask(taskId: number): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.post(`/verification/post/from-task/${taskId}`);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async verifyTask(taskId: number): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.post(`/verification/task/${taskId}/run`);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async runVerificationPipeline(payload?: { post_id?: string; limit?: number }): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.post('/verification/pipeline', payload || {});
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listVerificationPosts(limit?: number): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.get('/verification/posts', { params: { limit: limit || 20 } });
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listVerificationClaims(limit?: number): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.get('/verification/claims', { params: { limit: limit || 20 } });
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getVerificationClaim(claimId: string): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.get(`/verification/claim/${claimId}`);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async apifyHealth(): Promise<ApiResponse<any>> {
+    try { const r = await this.api.get('/apify/health'); return { success: true, data: r.data }; } catch (e) { return this.handleError(e); }
+  }
+  async apifyRun(payload: any): Promise<ApiResponse<any>> {
+    try { const r = await this.api.post('/apify/run', payload); return { success: true, data: r.data }; } catch (e) { return this.handleError(e); }
+  }
+
+  async listVerificationResults(limit?: number): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.get('/verification/results', { params: { limit: limit || 20 } });
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   // Error handling
   private handleError(error: any): ApiResponse<never> {
     console.error('API Error:', error);

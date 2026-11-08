@@ -26,7 +26,7 @@ except ImportError:
         pass
 
 from ..utils.config import load_config, ConfigError
-from .scrape_client import get_scrape_client
+from .scrape_client import get_scrape_client, get_apify_client
 
 # Setup module logger
 logger = logging.getLogger("Vanta.DataCollector")
@@ -86,7 +86,10 @@ class DataCollector:
         self.logger = logging.getLogger(f"Vanta.DataCollector.{platform}")
         self.error_messages = []
 
-        # Initialize Universal ScrapeCreators client
+        # Data provider priority: Apify (if token set) -> ScrapeCreators -> mock.
+        # Both are scrapers; OpenRouter (LLM) is separate and downstream.
+        self.apify_client = get_apify_client()
+        self.data_provider = "apify" if self.apify_client.is_configured else "scrapecreators"
         try:
             self.scrape_client = get_scrape_client()
             # If we got a mock client and didn't explicitly ask for mock data
@@ -115,6 +118,22 @@ class DataCollector:
         if self.use_mock_data:
             return self._generate_mock_profile(profile_id)
 
+        # Apify path: run actor, normalize first item as profile
+        if self.data_provider == "apify":
+            try:
+                apify_data = self.apify_client.scrape_profile(self.platform, profile_id)
+                items = apify_data.get("items") or []
+                data = items[0] if items and isinstance(items[0], dict) else {"items": items}
+                if not isinstance(data, dict):
+                    data = {"items": items}
+                data.setdefault("platform", self.platform)
+                data.setdefault("username", profile_id)
+                data["posts"] = items[1:] if len(items) > 1 else []
+                data["deep_analysis"] = {}
+                data["metadata"] = {"platform": self.platform, "collection_date": datetime.utcnow().isoformat() + "Z", "is_real_data": True, "provider": "apify", "actor": apify_data.get("actor")}
+                return data
+            except Exception as e:
+                self.logger.warning(f"Apify failed for {self.platform}/{profile_id}: {e}; falling back to ScrapeCreators")
         try:
             # Dynamically call the correct method on the universal client
             method_name = f"get_{self.platform}_profile"

@@ -26,6 +26,17 @@ type Task = {
   createdAt?: string;
 };
 
+type VerificationClaim = { id: string; text: string; type?: string; checkworthiness?: number; post_id?: string };
+type VerificationResult = { id: string; claim_id: string; status?: string; confidence?: number; composite?: number; fact_check_verdict?: string; evidence_chain_layers?: string[] };
+
+const verdictColor = (s?: string) => {
+  const v = (s || '').toLowerCase();
+  if (v.includes('verified_true') || v === 'true') return 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400';
+  if (v.includes('verified_false') || v === 'false' || v.includes('misleading')) return 'bg-rose-500/10 border-rose-500/20 text-rose-400';
+  if (v.includes('unverifiable') || v.includes('unverified') || v.includes('insufficient')) return 'bg-amber-500/10 border-amber-500/20 text-amber-400';
+  return 'bg-white/5 border-white/10 text-white/60';
+};
+
 const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [showNewAnalysis, setShowNewAnalysis] = useState(false);
@@ -33,16 +44,21 @@ const Dashboard: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [platformDist, setPlatformDist] = useState<Array<{ platform: string; count: number }>>([]);
   const [completionRate, setCompletionRate] = useState<{ total: number; completed: number; failed: number; completion_rate: number } | null>(null);
+  const [vClaims, setVClaims] = useState<VerificationClaim[]>([]);
+  const [vResults, setVResults] = useState<VerificationResult[]>([]);
+  const [vRunning, setVRunning] = useState(false);
 
   const [hoveredCard, setHoveredCard] = useState<number | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [tasksResp, distResp, rateResp] = await Promise.all([
+      const [tasksResp, distResp, rateResp, claimsResp, resultsResp] = await Promise.all([
         apiService.listTasks({ limit: 10, offset: 0 }),
         apiService.getPlatformDistribution(),
         apiService.getCompletionRate(),
+        apiService.listVerificationClaims(20).catch(() => ({ success: false, data: null }) as any),
+        apiService.listVerificationResults(20).catch(() => ({ success: false, data: null }) as any),
       ]);
 
       if (tasksResp.success && tasksResp.data?.tasks) {
@@ -54,6 +70,8 @@ const Dashboard: React.FC = () => {
       if (rateResp.success && rateResp.data) {
         setCompletionRate(rateResp.data);
       }
+      if ((claimsResp as any).success && (claimsResp as any).data?.claims) setVClaims((claimsResp as any).data.claims);
+      if ((resultsResp as any).success && (resultsResp as any).data?.results) setVResults((resultsResp as any).data.results);
     } finally {
       setLoading(false);
     }
@@ -222,6 +240,44 @@ const Dashboard: React.FC = () => {
             )}
           </div>
         </div>
+      </div>
+
+      {/* Verification (Product B) */}
+      <div className="glass-card p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-white flex items-center">
+            <span className="w-1.5 h-6 bg-emerald-500 rounded-full mr-3"></span>
+            Verification — Claims, Verdicts & Confidence
+          </h3>
+          <button disabled={vRunning} onClick={async () => { setVRunning(true); await apiService.runVerificationPipeline({}); await load(); setVRunning(false); }} className="glass-button text-xs bg-emerald-600/20 hover:bg-emerald-600/40 border-emerald-500/30 text-emerald-300 disabled:opacity-50">
+            {vRunning ? 'Running…' : 'Run Pipeline'}
+          </button>
+        </div>
+        {vClaims.length ? (
+          <div className="space-y-2">
+            {vClaims.map((c) => {
+              const vr = vResults.find((r) => r.claim_id === c.id);
+              const conf = vr?.composite ?? vr?.confidence;
+              return (
+                <div key={c.id} className="p-4 rounded-lg bg-white/5 border border-white/5">
+                  <p className="text-sm text-white/90">{c.text}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    <span className={`text-xs px-2 py-1 rounded-full border ${verdictColor(vr?.status)}`}>{vr?.status || 'pending'}</span>
+                    {vr?.fact_check_verdict && <span className="text-xs text-white/50">fact-check: {vr.fact_check_verdict}</span>}
+                    {conf != null && (
+                      <span className="flex items-center gap-2 text-xs text-white/60">confidence {Math.round(conf * 100)}%
+                        <span className="inline-block w-24 h-1.5 bg-white/10 rounded-full overflow-hidden"><span className="block h-full bg-emerald-400" style={{ width: `${Math.round(conf * 100)}%` }} /></span>
+                      </span>
+                    )}
+                    {vr?.evidence_chain_layers?.length ? <span className="text-xs text-white/40">layers: {vr.evidence_chain_layers.join(', ')}</span> : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-sm text-white/40">No verified claims yet. Create a post via <code>/api/verification/post</code> or verify a task, then run the pipeline.</p>
+        )}
       </div>
 
       {showNewAnalysis && (

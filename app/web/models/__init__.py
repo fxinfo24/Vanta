@@ -3,6 +3,7 @@ Database models for the web application
 """
 
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import deferred
 from datetime import datetime
 import enum
 
@@ -29,6 +30,8 @@ class Task(db.Model):
     progress = db.Column(db.Integer, default=0)
     message = db.Column(db.String(255))
     result_path = db.Column(db.String(255))
+    result_data = deferred(db.Column(db.JSON, nullable=True))
+    has_result = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
     error = db.Column(db.Text)
     duration = db.Column(db.Float)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -38,12 +41,18 @@ class Task(db.Model):
     started_at = db.Column(db.DateTime)
     completed_at = db.Column(db.DateTime)
 
-    def __init__(self, platform: str, profile_id: str):
+    def __init__(self, platform: str, profile_id: str, status=None, **kwargs):
         """Initialize a new task"""
         self.platform = platform.lower()
         self.profile_id = profile_id
-        self.status = TaskStatus.PENDING
-        self.progress = 0
+        # Accept status= for tests/fixtures; coerce str -> TaskStatus
+        if status is not None:
+            self.status = status if isinstance(status, TaskStatus) else TaskStatus(str(status).lower())
+        else:
+            self.status = TaskStatus.PENDING
+        self.progress = kwargs.pop('progress', 0)
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
     def start(self):
         """Mark task as started"""
@@ -59,7 +68,7 @@ class Task(db.Model):
             self.message = message
         db.session.commit()
 
-    def complete(self, result_path: str = None):
+    def complete(self, result_path: str = None, result_data=None):
         """Mark task as completed"""
         self.status = TaskStatus.COMPLETED
         self.progress = 100
@@ -68,6 +77,10 @@ class Task(db.Model):
 
         if result_path:
             self.result_path = result_path
+
+        if result_data is not None:
+            self.result_data = result_data
+            self.has_result = True
 
         if self.started_at:
             self.duration = (self.completed_at - self.started_at).total_seconds()
@@ -109,3 +122,4 @@ class Task(db.Model):
 
 # Import other models to ensure they are registered
 from .dossier import DossierSnapshot, CrossPlatformProfile
+from .verification import SocialMediaPost, Claim, VerificationResult, Platform, MediaType, LanguageCode, ClaimType, VerificationStatus

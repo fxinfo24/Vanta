@@ -67,6 +67,22 @@ Returns a count of tasks by platform.
 #### GET /api/stats/completion-rate
 Returns completion-rate metrics for tasks.
 
+### Verification Endpoints (Product B — consolidated into the same Flask app, implemented)
+
+Product B (7-layer verification) shares the same DB + app as Product A. No features removed; CLIs unchanged.
+
+- `POST /api/verification/post` — manual ingest `{platform, profile_id, text, author_name?, post_url?}` → `SocialMediaPost` (201)
+- `POST /api/verification/post/from-task/{task_id}` — bridge: completed Product A `Task.result_data` (bio/display/executive_summary) → `SocialMediaPost` (200/201)
+- `POST /api/verification/task/{task_id}/run` — one-call: bridge + Layer3→7 pipeline for that post's claims
+- `POST /api/verification/pipeline` — `{post_id?, limit?}`: extract (Layer3) then Layers 4→5→6→7 per claim. Returns per-claim stage summary; RAG skips cleanly to `UNVERIFIABLE` without evidence/API key.
+- `GET /api/verification/posts?limit=` · `GET /api/verification/claims?limit=` · `GET /api/verification/claim/{claim_id}` · `GET /api/verification/results?limit=`
+
+Layer order: ClaimExtractor → `FactCheckEngine` (google+mock) → `TemporalVerifier` (newsapi/wayback) → `RAGEngine` (openrouter, grounding-gated) → `ConfidenceScorer` (writes `layer_7` to `evidence_chain`, updates `composite_verification_score`). All read/write the consolidated `app/web/models/verification.py` superset schema (`verification_status` mirrors legacy `status`; `text` mirrors `content`; `timestamp` = platform time).
+
+Frontend: `frontend/src/services/api.ts` now exposes `createVerificationPost`, `createPostFromTask`, `verifyTask`, `runVerificationPipeline`, `listVerificationPosts/Claims/Results`, `getVerificationClaim`.
+
+**DB note:** verification tables (`social_media_posts`, `claims`, `verification_results`, `fact_check_sources`, `external_fact_checks`) are `db.create_all()`-ed at startup (SQLite/dev safe). On Postgres prefer `flask db migrate && flask db upgrade` — existing Integer-PK verification tables need a table rebuild to adopt String PKs.
+
 ### Not implemented in this repo (documentation placeholders)
 The following concepts are **not** implemented by the current Flask routes in this repository:
 - WebSockets for progress updates

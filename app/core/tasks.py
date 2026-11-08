@@ -105,9 +105,14 @@ def run_task_analysis(self, task_id: int) -> Dict[str, Any]:
             task.message = "Saving results..."
             db.session.commit()
 
-            # Canonical: persist in DB (Columns must exist in Task model!)
-            # task.result_data = result  <-- Removed: Column likely missing
-            # task.has_result = True     <-- Removed: Column likely missing
+            # Canonical: persist in DB; file is best-effort fallback
+            try:
+                task.result_data = json.loads(json.dumps(result, default=str))
+                task.has_result = True
+            except Exception as e:
+                print(f"Failed to serialize result_data for task {task_id}: {e}")
+                task.result_data = None
+                task.has_result = False
 
             # Optional: best-effort file output (useful for local debugging)
             try:

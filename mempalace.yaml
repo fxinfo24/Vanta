@@ -1,0 +1,13 @@
+wing: vanta
+description: Vanta / ProfileScope - Vanta
+rooms:
+  - name: backend
+    keywords: [api, server, routes, database, scraper, python, fastapi]
+  - name: frontend
+    keywords: [react, typescript, components, ui, tailwind]
+  - name: directives
+    keywords: [plan, directive, spec, requirements, architecture]
+  - name: deployment
+    keywords: [docker, railway, vps, nginx, deploy]
+  - name: general
+    keywords: []

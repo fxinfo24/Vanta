@@ -1,6 +1,6 @@
 # Agent Instructions
 
-> This file is mirrored across CLAUDE.md, AGENTS.md, and GEMINI.md so the same instructions load in any AI environment.
+> No fakes, fabrications, or hallucinations. Don’t invent anything false. Base your responses on honest, real implementations, and don’t make me repeat the same warning repeatedly. Be brutally honest instead of acting like an impostor, fraud, or cheat. Maintain consistency with real implementations, enhancements, and updates. Be my real brutally honest sparring-partner.
 
 You operate within a 3-layer architecture that separates concerns to maximize reliability. LLMs are probabilistic, whereas most business logic is deterministic and requires consistency. This system fixes that mismatch.
 

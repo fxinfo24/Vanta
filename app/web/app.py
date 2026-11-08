@@ -115,8 +115,15 @@ def create_app(test_config=None):
         # - In development/tests, `db.create_all()` is convenient.
         # - In production (Railway/Postgres), prefer Alembic migrations:
         #   `flask db upgrade`
+        # Consolidated verification tables are created if missing so Product B
+        # works without a separate migration flow:
         if app.config.get("TESTING"):
             db.create_all()
+        else:
+            try:
+                db.create_all()
+            except Exception as e:
+                logger.warning(f"db.create_all() failed (migrations recommended in prod): {e}")
 
     return app
 
