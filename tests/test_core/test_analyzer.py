@@ -43,36 +43,57 @@ def test_analyzer_initialization(analyzer):
     assert hasattr(analyzer, "_get_collector")
 
 
-@patch("app.core.analyzer.DataCollector")
-def test_analyze_profile(mock_collector_class, analyzer):
-    """Test complete profile analysis"""
-    # Configure mock collector
-    mock_collector = Mock()
-    mock_collector.collect_profile_data.return_value = {
-        "user_id": "test_user",
-        "username": "test_user",
-        "display_name": "Test User", 
-        "bio": "Test bio",
-        "posts": [{"id": "1", "content": "Test post content"}],
-        "metadata": {"platform": "twitter", "is_real_data": True}
-    }
-    mock_collector_class.return_value = mock_collector
+@patch("app.core.intelligence_analyzer.create_intelligence_analyzer")
+@patch("app.core.deep_collector.create_deep_collector")
+def test_analyze_profile(mock_deep_factory, mock_intel_factory, analyzer):
+    """Test complete profile analysis.
 
-    # Inject the mock collector into the cache to avoid instantiation logic if needed
-    # But since _get_collector instantiates DataCollector, our patch on the class should work.
-    
-    # Run analysis
+    NOTE (root cause of the old failure): SocialMediaAnalyzer.analyze_profile
+    no longer uses DataCollector - it collects via DeepDossierCollector
+    (create_deep_collector) and analyses via the intelligence engine.
+    The old test patched DataCollector, so the real deep collector ran and
+    burned live ScrapeCreators credits. Both real factories are mocked here
+    so this test never touches the network.
+    """
+    mock_collector = Mock()
+    mock_collector.deep_dossier.return_value = {
+        "profile": {
+            "username": "test_user", "display_name": "Test User", "bio": "Test bio",
+            "follower_count": 100, "following_count": 50, "posts_count": 10,
+            "verified": False, "location": "", "website": "",
+            "profile_image_url": "", "category": "", "like_count": 0,
+            "talking_about_count": 0,
+        },
+        "connected_accounts": [],
+        "statistics": {},
+    }
+    mock_deep_factory.return_value = mock_collector
+
+    mock_intel = Mock()
+    mock_intel.generate_full_report.return_value = {
+        "core_intelligence": {
+            "general_analysis": {"sentiment": {"overall": "neutral"}},
+            "authenticity": {"overall_score": 0.9},
+            "predictions": {"disclaimer": "test"},
+        },
+        "belief_system": {}, "consumer_profile": {}, "executive_summary": "test",
+    }
+    mock_intel_factory.return_value = mock_intel
+
     results = analyzer.analyze_profile("twitter", "test_user")
 
-    # Verify DataCollector was initialized and called
-    mock_collector_class.assert_called_with("twitter", 50) # 50 from test_config
-    mock_collector.collect_profile_data.assert_called_with("test_user")
+    # Deep collector must be used (not the legacy DataCollector path)
+    mock_deep_factory.assert_called_once()
+    mock_collector.deep_dossier.assert_called_once()
+    assert mock_collector.deep_dossier.call_args.kwargs["platform"] == "twitter"
+    assert mock_collector.deep_dossier.call_args.kwargs["username"] == "test_user"
 
-    # Check all required components are present
+    # Check all required components are present (current result schema)
     assert "metadata" in results
     assert "content_analysis" in results
-    assert "authenticity_analysis" in results
+    assert "authenticity" in results
     assert "predictions" in results
+    assert "profile_info" in results
 
     # Check metadata
     assert results["metadata"]["profile_id"] == "test_user"

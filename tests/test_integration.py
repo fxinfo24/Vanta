@@ -6,7 +6,7 @@ import json
 import os
 import pytest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import tempfile
 import shutil
 
@@ -87,11 +87,34 @@ def test_config():
     }
 
 
-@patch.object(DataCollector, "collect_profile_data")
-def test_full_analysis_flow(mock_collect, mock_profile_data, test_config, tmp_path):
-    """Test the complete analysis process from data collection to results"""
-    # Mock the data collection to return our test data
-    mock_collect.return_value = mock_profile_data
+@patch("app.core.intelligence_analyzer.create_intelligence_analyzer")
+@patch("app.core.deep_collector.create_deep_collector")
+def test_full_analysis_flow(mock_deep_factory, mock_intel_factory, mock_profile_data, test_config, tmp_path):
+    """Test the complete analysis flow.
+
+    Root cause of the old failure: analyze_profile collects via
+    DeepDossierCollector (create_deep_collector), not DataCollector, so the
+    old patch never intercepted and real network calls ran. Both real
+    factories are mocked so the test is hermetic (no credits burned).
+    """
+    mock_collector = Mock()
+    mock_collector.deep_dossier.return_value = mock_profile_data
+    mock_deep_factory.return_value = mock_collector
+
+    mock_intel = Mock()
+    mock_intel.generate_full_report.return_value = {
+        "core_intelligence": {
+            "general_analysis": {
+                "sentiment": {"overall": "neutral"},
+                "personality_traits": {}, "interests": [],
+                "writing_style": {}, "content_topics": [],
+            },
+            "authenticity": {"overall_score": 0.9},
+            "predictions": {"disclaimer": "Predictions are estimates, not guarantees."},
+        },
+        "belief_system": {}, "consumer_profile": {}, "executive_summary": "test",
+    }
+    mock_intel_factory.return_value = mock_intel
 
     # Create a temporary config file
     config_path = tmp_path / "test_config.json"
@@ -109,9 +132,9 @@ def test_full_analysis_flow(mock_collect, mock_profile_data, test_config, tmp_pa
     assert results["metadata"]["profile_id"] == "test_user"
     assert results["metadata"]["platform"] == "twitter"
 
-    # Check that all analysis sections are present
+    # Check that all analysis sections are present (current schema keys)
     assert "content_analysis" in results
-    assert "authenticity_analysis" in results
+    assert "authenticity" in results
     assert "predictions" in results
 
     # Verify content analysis has all expected sections
@@ -122,7 +145,7 @@ def test_full_analysis_flow(mock_collect, mock_profile_data, test_config, tmp_pa
     assert "content_topics" in content
 
     # Verify authenticity analysis format
-    auth = results["authenticity_analysis"]
+    auth = results["authenticity"]
     assert isinstance(auth.get("overall_score", 0), (int, float))
 
     # Verify predictions are included

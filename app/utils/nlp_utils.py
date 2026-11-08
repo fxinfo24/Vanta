@@ -199,7 +199,12 @@ cognitive_lexicon = {
 
 def preprocess_text(text: str) -> str:
     """
-    Preprocess text for analysis (lowercase, remove extra whitespace)
+    Preprocess text for analysis: lowercase, strip URLs, remove
+    punctuation, collapse whitespace.
+
+    Contract (relied on by tests and NLP callers): URLs must not survive
+    preprocessing (they skew token/sentiment stats), and punctuation
+    , . ! ? must be removed.
 
     Args:
         text: Input text to preprocess
@@ -210,8 +215,13 @@ def preprocess_text(text: str) -> str:
     if not text:
         return ""
 
-    # Convert to lowercase
     text = text.lower()
+
+    # Remove URLs (http/https and bare www links)
+    text = re.sub(r"https?://\S+|www\.\S+", " ", text)
+
+    # Remove punctuation
+    text = re.sub(r"[,\.!?]", " ", text)
 
     # Remove extra whitespace
     text = re.sub(r"\s+", " ", text).strip()
@@ -500,7 +510,16 @@ def analyze_writing_style(text: str) -> Dict[str, Any]:
         # Calculate basic metrics
         word_count = len(words)
         avg_sentence_length = word_count / len(sentences) if sentences else 0
-        unique_words_ratio = len(set(words)) / word_count if word_count > 0 else 0
+        # Vocabulary diversity: average of unigram and bigram type-token
+        # ratios. Plain unigram TTR (unique/total) is length-biased - it
+        # penalises long text, so a rich long passage scored LOWER than a
+        # short simple one. Bigram TTR is far more length-robust; averaging
+        # the two keeps the 0-1 scale existing consumers expect (>0.8 etc.)
+        # while ordering rich vs simple text correctly.
+        unigram_ttr = len(set(words)) / word_count if word_count > 0 else 0
+        bigrams = list(zip(words, words[1:]))
+        bigram_ttr = len(set(bigrams)) / len(bigrams) if bigrams else unigram_ttr
+        unique_words_ratio = (unigram_ttr + bigram_ttr) / 2
 
         # Calculate lexical density and other metrics if spaCy is available
         if SPACY_AVAILABLE and nlp:
@@ -534,8 +553,15 @@ def analyze_writing_style(text: str) -> Dict[str, Any]:
             punct_freq = {}
             pos_distribution = {}
 
-        # Calculate complexity (based on sentence length and unique words)
-        complexity = min((avg_sentence_length / 20) + unique_words_ratio, 1.0)
+        # Calculate complexity (sentence length + vocabulary diversity).
+        # Old formula min(len/20 + diversity, 1.0) saturated at 1.0 for both
+        # simple and complex text, destroying the ordering. Weight each
+        # component 50/50 so complex text (long sentences, diverse vocab)
+        # scores higher than simple text while staying in 0-1.
+        complexity = min(
+            (min(avg_sentence_length, 20) / 20) * 0.5 + unique_words_ratio * 0.5,
+            1.0,
+        )
 
         # Calculate sentiment for emotional tone
         sentiment = analyze_sentiment(text)

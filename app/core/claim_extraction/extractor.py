@@ -4,6 +4,7 @@ Extract factual claims from social media posts (global: EN + BN)
 """
 
 import re
+import hashlib
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -199,8 +200,13 @@ class ClaimExtractor:
             # Extract entities
             entities = self.extract_entities_simple(sentence, language_code)
             
-            # Generate claim hash for deduplication
-            claim_hash = str(hash(sentence) % (2**32))
+            # Stable hash for dedup. ROOT CAUSE of duplicate claims on re-run:
+            # Python hash() is salted per process (PYTHONHASHSEED), so the
+            # dedup lookup never matched after a restart and new claim IDs
+            # were minted every run. sha256 of normalized text is stable.
+            claim_hash = hashlib.sha256(
+                re.sub(r"\s+", " ", sentence.strip().lower()).encode()
+            ).hexdigest()
             
             claim_data = {
                 "claim_text": sentence.strip(),
@@ -248,6 +254,7 @@ class ClaimExtractor:
                 
                 if existing:
                     logger.debug(f"Claim already exists: {claim_data['claim_hash'][:12]}")
+                    saved_claims.append(existing)  # return existing too: pipeline must re-verify/reuse it, not lose it
                     continue
                 
                 # Create Claim model

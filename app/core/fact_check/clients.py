@@ -95,31 +95,53 @@ class GoogleFactCheckClient(FactCheckClient):
             logger.warning("Google Fact Check API key not configured, returning empty results")
             return []
         
+        # Google ranking is non-deterministic: the same claim returned a
+        # USA Today match on one run and NO_MATCH on another. Query with
+        # two phrasings (full claim + keyword phrase) and union the results
+        # (deduped by review URL) so a single flaky ranking cannot lose a
+        # real fact-check.
+        queries = [claim_text[:500]]
+        phrase = self._keyword_phrase(claim_text)
+        if phrase and phrase.lower() not in claim_text.lower():
+            queries.append(phrase)
+        seen, raw_results = set(), []
+        for q in queries:
+            for r in self._search_once(q, language, max_age_days, kwargs):
+                key = (r.get("url", ""), r.get("text", ""))
+                if key not in seen:
+                    seen.add(key)
+                    raw_results.append(r)
+        logger.info(f"Google Fact Check found {len(raw_results)} results for: {claim_text[:50]}...")
+        return self.normalize_results(raw_results)
+
+    @staticmethod
+    def _keyword_phrase(text: str) -> str:
+        stop = {"the","is","are","was","were","has","have","that","this","and",
+                "actually","for","with","from","been","will","said","says"}
+        import re as _re
+        cleaned = _re.sub(r"[^\w\s]", " ", text.lower())
+        words = [w for w in cleaned.split() if w not in stop and len(w) > 2]
+        return " ".join(words[:5])
+
+    def _search_once(self, query: str, language: str, max_age_days: int, kwargs: dict) -> List[Dict[str, Any]]:
+        """Single Google claims:search call; returns raw (unnormalized) results."""
         try:
             self._rate_limit_check()
-            
-            # Prepare request
             endpoint = f"{self.base_url}/claims:search"
             params = {
                 "key": self.api_key,
-                "query": claim_text[:500],  # Google has length limits
+                "query": query[:500],
                 "languageCode": language,
                 "maxAgeDays": max_age_days
             }
-            
-            # Add optional parameters
             if "publisher" in kwargs:
                 params["publisher"] = kwargs["publisher"]
             if "review_date_after" in kwargs:
                 params["reviewDate.after"] = kwargs["review_date_after"]
-            
-            # Make request
             response = requests.get(endpoint, params=params, timeout=10)
-            
             if response.status_code != 200:
                 logger.error(f"Google Fact Check API error: {response.status_code} - {response.text}")
                 return []
-            
             data = response.json()
             
             # Parse claims.
@@ -147,10 +169,8 @@ class GoogleFactCheckClient(FactCheckClient):
                         "similarity_score": 0.0  # Will be calculated by matcher
                     }
                     raw_results.append(result)
-            
-            logger.info(f"Google Fact Check found {len(raw_results)} results for: {claim_text[:50]}...")
-            return self.normalize_results(raw_results)
-            
+            logger.info(f"Google Fact Check ({query[:40]}...) found {len(raw_results)} results")
+            return raw_results
         except Exception as e:
             logger.error(f"Google Fact Check API error: {e}")
             return []
@@ -179,24 +199,9 @@ class FullFactClient(FactCheckClient):
         # For now, return mock data or empty
         # TODO: Implement actual Full Fact API when available
         
-        logger.info(f"Full Fact would search for: {claim_text[:50]}... (API not implemented)")
-        
-        # Mock response for development
-        mock_results = [
-            {
-                "id": "full_fact_mock_001",
-                "text": "Example claim about UK politics",
-                "verdict": "Correct",
-                "verdict_date": "2024-01-15",
-                "explanation": "This is a mock fact-check for development.",
-                "reviewer": "Full Fact",
-                "url": "https://fullfact.org/example",
-                "languages": ["en"],
-                "categories": ["politics"]
-            }
-        ]
-        
-        return self.normalize_results(mock_results)
+        # HONEST: no API implemented -> no results. Never fabricate a fact-check.
+        logger.warning(f"Full Fact API not implemented; returning no results for: {claim_text[:50]}...")
+        return []
 
 
 class MockFactCheckClient(FactCheckClient):

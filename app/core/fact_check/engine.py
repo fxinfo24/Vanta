@@ -20,12 +20,14 @@ class FactCheckEngine:
     Main engine for Layer 4 fact-checking
     """
     
-    def __init__(self, 
+    def __init__(self,
                  sources: List[str] = None,
-                 similarity_threshold: float = 0.3,
+                 similarity_threshold: float = None,
                  cache_results: bool = True):
-        
-        self.sources = sources or ["google", "mock"]
+
+        # Production default is Google only. The mock client returns fabricated
+        # fact-checks and must never run in the live pipeline (kept for tests).
+        self.sources = sources or ["google"]
         self.similarity_threshold = similarity_threshold
         self.cache_results = cache_results
         
@@ -233,7 +235,7 @@ class FactCheckEngine:
 
 def create_fact_check_engine(
     sources: List[str] = None,
-    similarity_threshold: float = 0.3
+    similarity_threshold: float = None
 ) -> FactCheckEngine:
     """
     Factory function to create fact-check engine

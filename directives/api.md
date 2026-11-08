@@ -82,6 +82,7 @@ Product B (7-layer verification) shares the same DB + app as Product A. No featu
 - `POST /api/verification/task/{task_id}/run` — one-call: bridge + Layer3→7 pipeline for that post's claims
 - `POST /api/verification/pipeline` — `{post_id?, limit?}`: extract (Layer3) then Layers 4→5→6→7 per claim. Returns per-claim stage summary; RAG skips cleanly to `UNVERIFIABLE` without evidence/API key.
 - `GET /api/verification/posts?limit=` · `GET /api/verification/claims?limit=` · `GET /api/verification/claim/{claim_id}` · `GET /api/verification/results?limit=`
+- `POST /api/verification/claim/{claim_id}/review` — human review `{verdict: VERIFIED_TRUE|VERIFIED_FALSE|MISLEADING|UNVERIFIABLE, action: approve|override, reviewer?, note?}` → writes `human_override` into `evidence_chain.layer_7`, clears `needs_human_review`, applies verdict on `override` (400 on invalid verdict; 404 if claim/verdict missing)
 
 Layer order: ClaimExtractor → `FactCheckEngine` (google+mock) → `TemporalVerifier` (newsapi/wayback) → `RAGEngine` (openrouter, grounding-gated) → `ConfidenceScorer` (writes `layer_7` to `evidence_chain`, updates `composite_verification_score`). All read/write the consolidated `app/web/models/verification.py` superset schema (`verification_status` mirrors legacy `status`; `text` mirrors `content`; `timestamp` = platform time).
 

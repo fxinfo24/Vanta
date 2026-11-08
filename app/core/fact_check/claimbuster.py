@@ -38,7 +38,7 @@ class ClaimBusterClient:
         }
         """
         if not self.api_key:
-            return self._mock_score(text, language)
+            return self._unavailable_score(text, language)
         
         try:
             headers = {
@@ -61,7 +61,6 @@ class ClaimBusterClient:
             if response.status_code == 200:
                 data = response.json()
                 score = data.get("score", 0.0)
-                
                 return {
                     "score": score,
                     "is_checkworthy": score >= 0.5,
@@ -69,13 +68,11 @@ class ClaimBusterClient:
                     "explanation": self._get_explanation(score),
                     "source": "claimbuster"
                 }
-            else:
-                logger.error(f"ClaimBuster API error: {response.status_code}")
-                return self._mock_score(text, language)
-                
+            logger.error(f"ClaimBuster API error: {response.status_code}")
+            return self._unavailable_score(text, language, f"HTTP {response.status_code}")
         except Exception as e:
             logger.error(f"ClaimBuster API call failed: {e}")
-            return self._mock_score(text, language)
+            return self._unavailable_score(text, language, str(e))
     
     def score_claims_batch(self, texts: List[str], language: str = "en") -> List[Dict[str, Any]]:
         """
@@ -87,36 +84,23 @@ class ClaimBusterClient:
         
         return results
     
-    def _mock_score(self, text: str, language: str) -> Dict[str, Any]:
+    def _unavailable_score(self, text: str, language: str, reason: str = "no API key") -> Dict[str, Any]:
         """
-        Mock scoring when API key is not available
-        Uses heuristics to estimate check-worthiness
+        HONEST unavailable result. The old _mock_score returned heuristic
+        numbers labelled like real ClaimBuster scores - fabricated data.
+        Now: score is None and source is 'unavailable'. Callers MUST NOT
+        treat this as a check-worthiness judgement.
+        To enable: register at https://claimbuster.org/api/ (free key,
+        email verification required - the account owner must do this;
+        an agent cannot receive the verification email) and set
+        CLAIMBUSTER_API_KEY in .env.
         """
-        # Simple heuristics for check-worthiness
-        checkworthy_keywords = {
-            "en": ["number", "statistic", "percentage", "million", "billion", "announced", "said", "claimed", "government"],
-            "bn": ["সংখ্যা", "পরিমাণ", "শতাংশ", "লক্ষ", "কোটি", "ঘোষণা", "বলেছে", "দাবি", "সরকার"]
-        }
-        
-        keywords = checkworthy_keywords.get(language, checkworthy_keywords["en"])
-        
-        text_lower = text.lower()
-        keyword_count = sum(1 for keyword in keywords if keyword in text_lower)
-        
-        # Simple scoring based on keyword presence
-        if keyword_count >= 3:
-            score = 0.7
-        elif keyword_count >= 1:
-            score = 0.4
-        else:
-            score = 0.1
-        
         return {
-            "score": score,
-            "is_checkworthy": score >= 0.5,
-            "confidence": min(score * 1.5, 1.0),
-            "explanation": f"Mock score based on {keyword_count} check-worthy keywords",
-            "source": "mock"
+            "score": None,
+            "is_checkworthy": False,
+            "confidence": 0.0,
+            "explanation": f"ClaimBuster unavailable ({reason}); no score produced",
+            "source": "unavailable",
         }
     
     def _get_explanation(self, score: float) -> str:
@@ -147,7 +131,14 @@ class ClaimBusterClient:
         scored_claims = []
         for i, (text, language) in enumerate(zip(texts, languages)):
             result = self.score_claim(text, language)
-            
+            if result.get("source") == "unavailable":
+                # Never filter on a fabricated score: pass claims through
+                # unchanged so downstream stages still see them.
+                claim_data = claims[i].copy()
+                claim_data["checkworthiness_score"] = None
+                claim_data["checkworthiness_source"] = "unavailable"
+                scored_claims.append(claim_data)
+                continue
             if result["is_checkworthy"]:
                 claim_data = claims[i].copy()
                 claim_data["checkworthiness_score"] = result["score"]

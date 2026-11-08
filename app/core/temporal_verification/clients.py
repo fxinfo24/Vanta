@@ -35,7 +35,7 @@ class GDELTClient:
                      claim_text: str,
                      start_date: str,
                      end_date: str,
-                     country: str = "BD") -> List[Dict[str, Any]]:
+                     country: str = None) -> List[Dict[str, Any]]:
         """
         Search GDELT for events matching claim
         
@@ -52,8 +52,9 @@ class GDELTClient:
             # Extract keywords for search
             keywords = self._extract_keywords(claim_text)
             
+            query = f"{keywords} sourcelang:eng" + (f" location:{country}" if country else "")
             params = {
-                "query": f"{keywords} sourcelang:eng location:{country}",
+                "query": query,
                 "mode": "artlist",
                 "format": "json",
                 "maxrecords": 50,
@@ -103,16 +104,14 @@ class GDELTClient:
         return " ".join(keywords)
     
     def _calculate_relevance(self, claim_text: str, article: Dict) -> float:
-        """Calculate relevance score between claim and article"""
-        claim_words = set(claim_text.lower().split())
-        article_title = article.get("title", "").lower()
-        article_words = set(article_title.split())
-        
-        if not claim_words or not article_words:
+        """Relevance via TF-IDF cosine (labelled, see matcher.tfidf_cosine).
+        Old word-overlap / len(claim_words) scored 0.26 for genuinely
+        relevant articles and rejected them."""
+        try:
+            from app.core.fact_check.matcher import tfidf_cosine
+            return tfidf_cosine(claim_text, article.get("title", ""))
+        except Exception:
             return 0.0
-        
-        intersection = claim_words.intersection(article_words)
-        return len(intersection) / len(claim_words)
 
 
 class WaybackClient:
@@ -312,16 +311,17 @@ class NewsAPIClient:
         return " ".join(words[:5])
     
     def _calculate_news_relevance(self, claim_text: str, article: Dict) -> float:
-        """Calculate relevance between claim and article"""
-        claim_words = set(claim_text.lower().split())
-        article_text = f"{article.get('title', '')} {article.get('description', '')}".lower()
-        article_words = set(article_text.split())
-        
-        if not claim_words or not article_words:
+        """Relevance between claim and article via TF-IDF cosine over
+        title+description (labelled tfidf in verifier output). The old
+        word-overlap/len(claim_words) metric averaged 0.26 on 16 real
+        articles for a true claim and wrongly set verified=False."""
+        try:
+            from app.core.fact_check.matcher import tfidf_cosine
+            return tfidf_cosine(
+                claim_text,
+                f"{article.get('title', '')} {article.get('description', '')}")
+        except Exception:
             return 0.0
-        
-        intersection = claim_words.intersection(article_words)
-        return len(intersection) / len(claim_words)
 
 
 class WikipediaClient:
@@ -356,8 +356,14 @@ class WikipediaClient:
                 "format": "json"
             }
             
-            search_resp = requests.get(search_url, params=search_params, timeout=10)
-            search_data = search_resp.json()
+            search_resp = requests.get(search_url, params=search_params, timeout=10,
+                                     headers={"User-Agent": "Vanta-temporal/1.0"})
+            if search_resp.status_code != 200:
+                return None
+            try:
+                search_data = search_resp.json()
+            except Exception:
+                return None
             
             if not search_data.get("query", {}).get("search"):
                 return None
@@ -366,19 +372,29 @@ class WikipediaClient:
             page_id = search_data["query"]["search"][0]["pageid"]
             page_title = search_data["query"]["search"][0]["title"]
             
-            # Try to get revision near date
+            # Historical state as of as_of_date: newest revision at/before
+            # that date. Old code fetched the 50 OLDEST revisions
+            # (rvdir=newer from page creation) and picked the closest among
+            # them - for old articles that is decades off the target date.
             revision_params = {
                 "action": "query",
                 "prop": "revisions",
                 "rvprop": "content|timestamp",
-                "rvlimit": 50,
-                "rvdir": "newer",
+                "rvlimit": 5,
+                "rvstart": f"{as_of_date}T00:00:00Z",
+                "rvdir": "older",
                 "format": "json",
                 "pageids": page_id
             }
             
-            revision_resp = requests.get(search_url, params=revision_params, timeout=10)
-            revision_data = revision_resp.json()
+            revision_resp = requests.get(search_url, params=revision_params, timeout=10,
+                                       headers={"User-Agent": "Vanta-temporal/1.0"})
+            if revision_resp.status_code != 200:
+                return None
+            try:
+                revision_data = revision_resp.json()
+            except Exception:
+                return None
             
             revisions = revision_data.get("query", {}).get("pages", {}).get(str(page_id), {}).get("revisions", [])
             

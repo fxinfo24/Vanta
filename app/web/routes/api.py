@@ -568,7 +568,7 @@ def create_verification_post():
             profile_id=profile_id,
             text=text,
             content=text,
-            text_hash=str(abs(hash(text)) % (2**32)),
+            text_hash=hashlib.md5(text.encode()).hexdigest()[:32],  # stable; hash() is per-process salted
             detected_language=lang,
             detected_language_confidence=lang_conf,
             author_id=data.get("author_id", profile_id),
@@ -674,6 +674,53 @@ def get_verification_claim(claim_id):
         return jsonify({"error": "Claim not found"}), 404
     vr = db.session.query(VerificationResult).filter_by(claim_id=claim.id).first()
     return jsonify(_verification_payload(claim=claim, vr=vr))
+
+
+@api_bp.route("/verification/claim/<claim_id>/review", methods=["POST"])
+def review_verification_claim(claim_id):
+    """Human review: approve or override a claim's verdict.
+    Body: { "verdict": "VERIFIED_TRUE|VERIFIED_FALSE|MISLEADING|UNVERIFIABLE",
+            "action": "approve|override" (default override),
+            "reviewer": str, "note": str }
+    Closes the gap where needs_human_review was set but human_override
+    could never be written (always None).
+    """
+    from app.web.models.verification import Claim, VerificationResult, VerificationStatus
+    claim = db.session.query(Claim).filter_by(id=claim_id).first()
+    if not claim:
+        return jsonify({"error": "Claim not found"}), 404
+    vr = db.session.query(VerificationResult).filter_by(claim_id=claim.id).first()
+    if not vr:
+        return jsonify({"error": "No verification result yet for this claim (run the pipeline first)"}), 404
+    data = request.get_json() or {}
+    verdict = str(data.get("verdict", "")).upper()
+    from app.web.models.verification import _coerce_status
+    target = _coerce_status(verdict)
+    if target is None:
+        return jsonify({"error": f"Invalid verdict '{verdict}'. Use VERIFIED_TRUE, VERIFIED_FALSE, MISLEADING or UNVERIFIABLE"}), 400
+    action = str(data.get("action", "override")).lower()
+    if action not in ("approve", "override"):
+        return jsonify({"error": "action must be 'approve' or 'override'"}), 400
+    review = {
+        "verdict": target.value,
+        "action": action,
+        "reviewer": data.get("reviewer", ""),
+        "note": data.get("note", ""),
+        "reviewed_at": datetime.utcnow().isoformat(),
+    }
+    chain = vr.evidence_chain or {}
+    layer7 = dict(chain.get("layer_7", {}))
+    layer7["human_override"] = review
+    layer7["needs_human_review"] = False
+    vr.evidence_chain = {**chain, "layer_7": layer7}  # reassign: JSON mutation isn't tracked
+    if action == "override":
+        vr.verification_status = target
+        vr.status = target.value
+        vr.fact_check_verdict = target.value
+    db.session.commit()
+    return jsonify({"message": f"Human review recorded ({action})", "claim_id": claim.id,
+                    "human_override": review, "verification_status": vr.status,
+                    "needs_human_review": False})
 
 
 @api_bp.route("/verification/results", methods=["GET"])

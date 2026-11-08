@@ -23,7 +23,8 @@ class TemporalVerifier:
                  sources: List[str] = None,
                  min_confidence: float = 0.3):
         
-        self.sources = sources or ["newsapi", "wayback"]  # Default sources
+        # GDELT + Wikipedia clients existed but were never in the default list.
+        self.sources = sources or ["newsapi", "wayback", "gdelt", "wikipedia"]
         self.min_confidence = min_confidence
         
         # Initialize clients
@@ -84,13 +85,16 @@ class TemporalVerifier:
         """
         Extract key topics from claim text
         """
-        # Simple topic extraction (replace with NLP later)
-        stopwords = {"the", "is", "are", "was", "were", "has", "have", "that", "this"}
-        
-        words = claim.claim_text.lower().split()
-        topics = [w for w in words if w not in stopwords and len(w) > 3]
-        
-        return topics[:5]  # Top 5 topics
+        # Single words ("2020", "election") make useless Wikipedia searches.
+        # Use one phrase topic: first 4 content words, which Wikipedia search
+        # can actually resolve to an article.
+        stopwords = {"the", "is", "are", "was", "were", "has", "have", "that", "this",
+                     "and", "actually", "for", "with", "from", "were", "been", "will"}
+        import re as _re
+        cleaned = _re.sub(r"[^\w\s]", " ", claim.claim_text.lower())
+        words = [w for w in cleaned.split() if w not in stopwords and len(w) > 2]
+        phrase = " ".join(words[:4])
+        return [phrase] if phrase else []
     
     def verify_with_newsapi(self, claim: Claim, claim_date: str) -> Dict[str, Any]:
         """
@@ -117,23 +121,44 @@ class TemporalVerifier:
                     "confidence": 0.0
                 }
             
+            # Re-score relevance with embedding cosine (batch: claim + all
+            # articles in one call). TF-IDF over long descriptions dilutes to
+            # ~0.14 even for on-topic articles; embeddings are the honest
+            # semantic measure. Falls back to client TF-IDF if API unavailable.
+            relevance_method = "tfidf_cosine"
+            try:
+                from app.core.fact_check.matcher import get_embedder, _cosine
+                texts = [claim.claim_text] + [
+                    f"{a.get('title','')} {a.get('description','')}" for a in articles]
+                embs = get_embedder().embed(texts)
+                if embs:
+                    for i, a in enumerate(articles):
+                        a["relevance_score"] = _cosine(embs[0], embs[i + 1])
+                    relevance_method = "embedding:" + get_embedder().model
+            except Exception as e:
+                logger.warning(f"Embedding relevance failed, keeping TF-IDF: {e}")
+
             # Calculate temporal plausibility
             relevance_scores = [a.get("relevance_score", 0.0) for a in articles]
             avg_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
             
-            # Check if any high-relevance articles
-            high_relevance = any(score > 0.5 for score in relevance_scores)
-            
-            verified = high_relevance or avg_relevance > 0.3
-            
+            # Relevance is now TF-IDF cosine (see clients._calculate_news_relevance).
+            # Judge by the BEST article, not the average: a single on-topic
+            # article proves contemporaneous coverage; averaging over loosely
+            # related results (old metric: 0.26) wrongly rejected real coverage.
+            top_relevance = max(relevance_scores) if relevance_scores else 0.0
+            verified = top_relevance >= 0.35
+
             return {
                 "verified": verified,
-                "reason": f"Found {len(articles)} news articles (avg relevance: {avg_relevance:.2f})",
+                "reason": f"Found {len(articles)} news articles (top relevance: {top_relevance:.2f}, avg: {avg_relevance:.2f})",
                 "articles": articles[:5],  # Top 5
                 "total_articles": len(articles),
                 "avg_relevance": avg_relevance,
-                "high_relevance_articles": sum(1 for s in relevance_scores if s > 0.5),
-                "confidence": min(avg_relevance * 2, 1.0),  # Scale to 0-1
+                "top_relevance": top_relevance,
+                "relevance_method": relevance_method,
+                "high_relevance_articles": sum(1 for s in relevance_scores if s >= 0.35),
+                "confidence": min(top_relevance, 1.0),
                 "sources_checked": len(articles)
             }
             
@@ -208,16 +233,29 @@ class TemporalVerifier:
         client = self.clients["gdelt"]
         
         try:
-            # Calculate date range (30 days around claim)
+            # Date range: normally +-15d around the post date. BUT if the
+            # claim text names a different year (e.g. a 2026 post about the
+            # "2020 election"), the contemporaneous window can never match -
+            # search the named year instead (honest, documented in reason).
             claim_dt = datetime.strptime(claim_date, "%Y-%m-%d")
-            start_date = (claim_dt - timedelta(days=15)).strftime("%Y-%m-%d")
-            end_date = (claim_dt + timedelta(days=15)).strftime("%Y-%m-%d")
+            import re as _re
+            years = [y for y in _re.findall(r"\b(19|20)\d{2}\b", claim.claim_text)]
+            named_year = None
+            for y in _re.findall(r"\b((?:19|20)\d{2})\b", claim.claim_text):
+                if int(y) != claim_dt.year:
+                    named_year = y
+                    break
+            if named_year:
+                start_date, end_date = f"{named_year}-01-01", f"{named_year}-12-31"
+            else:
+                start_date = (claim_dt - timedelta(days=15)).strftime("%Y-%m-%d")
+                end_date = (claim_dt + timedelta(days=15)).strftime("%Y-%m-%d")
             
             events = client.search_events(
                 claim_text=claim.claim_text,
                 start_date=start_date,
                 end_date=end_date,
-                country="BD"  # Default to Bangladesh
+                country=None  # global search; hardcoding BD hid all non-Bangladeshi events
             )
             
             if not events:
@@ -231,8 +269,8 @@ class TemporalVerifier:
             relevance_scores = [e.get("relevance_score", 0.0) for e in events]
             avg_relevance = sum(relevance_scores) / len(relevance_scores)
             
-            # Verify if event was mentioned around claim time
-            verified = avg_relevance > 0.2
+            # Verify if any event is topically related (TF-IDF cosine now)
+            verified = bool(events) and max(relevance_scores) >= 0.30
             
             return {
                 "verified": verified,
@@ -352,15 +390,14 @@ class TemporalVerifier:
         }
         
         for key, result in verifications.items():
-            if result.get("verified") is not False:  # Skip failed checks
-                confidence = result.get("confidence", 0.0)
-                weight = weights.get(key, 0.1)
-                
-                total_confidence += confidence * weight
-                total_weight += weight
-                
-                if not result.get("verified", True):
-                    all_verified = False
+            # Include ALL sources: skipping failed checks (old behaviour)
+            # inflated confidence to 1.0 from the single no-URLs pass.
+            confidence = result.get("confidence", 0.0)
+            weight = weights.get(key, 0.1)
+            total_confidence += confidence * weight
+            total_weight += weight
+            if not result.get("verified", True):
+                all_verified = False
         
         # Calculate final confidence
         final_confidence = total_confidence / total_weight if total_weight > 0 else 0.0
@@ -413,6 +450,7 @@ class TemporalVerifier:
             verification.evidence_chain = {
                 **verification.evidence_chain,
                 "layer_5": {
+                    "verified": result.get("verified"),
                     "temporal_plausibility": result["temporal_plausibility"],
                     "confidence": result["confidence"],
                     "claim_date": result["claim_date"],
