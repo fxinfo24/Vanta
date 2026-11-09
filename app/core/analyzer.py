@@ -4,6 +4,7 @@ Main orchestrator for social media profile analysis
 """
 
 import json
+import os
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -60,6 +61,58 @@ class SocialMediaAnalyzer:
             rate_limit = self.config["rate_limits"].get(platform, 60)
             self._collector_cache[cache_key] = DataCollector(platform, rate_limit)
         return self._collector_cache[cache_key]
+
+    # ------------------------------------------------------------------
+    # Dossier cache: re-analysis must not re-scrape data that has not changed.
+    # Only meaningful inside a Flask app context with a known owner; CLI and
+    # desktop runs have no user to scope the cache to, so they always collect.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _cache_scope():
+        """Return (session, user_id, ttl_hours) when caching is available."""
+        try:
+            from flask import has_app_context
+            if not has_app_context():
+                return None
+            from app.utils.config import get_user_context
+            ctx = get_user_context() or {}
+            user_id = ctx.get("user_id")
+            if not user_id:
+                return None
+            from app.web.models import db
+            try:
+                ttl = int(os.getenv("DOSSIER_CACHE_TTL_HOURS", "12") or "12")
+            except ValueError:
+                ttl = 12
+            return db.session, user_id, ttl
+        except Exception:
+            return None
+
+    def _cache_lookup(self, platform: str, profile_id: str) -> Optional[Dict[str, Any]]:
+        scope = self._cache_scope()
+        if scope is None:
+            return None
+        session, user_id, _ttl = scope
+        try:
+            from app.web.models.dossier import get_cached_dossier
+            return get_cached_dossier(session, user_id, platform, profile_id)
+        except Exception as exc:
+            self.logger.warning(f"Dossier cache lookup failed (collecting instead): {exc}")
+            return None
+
+    def _cache_store(self, platform: str, profile_id: str, dossier: Dict[str, Any]) -> None:
+        scope = self._cache_scope()
+        if scope is None:
+            return
+        session, user_id, ttl = scope
+        try:
+            from app.web.models.dossier import store_cached_dossier
+            payload = {k: v for k, v in dossier.items() if k != "source"}
+            store_cached_dossier(session, user_id, platform, profile_id, payload,
+                                 ttl_hours=ttl)
+        except Exception as exc:
+            # A cache write must never fail a run that already collected data.
+            self.logger.warning(f"Dossier cache write failed: {exc}")
 
     @staticmethod
     def _build_coverage(results: Dict[str, Any], dossier: Dict[str, Any]) -> Dict[str, Any]:
@@ -128,6 +181,9 @@ class SocialMediaAnalyzer:
             "not_measured": [i for i in items if i["status"] != "measured"],
             "missing_inputs": metric_gaps,
             "collection_errors": collection_errors,
+            # Where this run's inputs came from: a fresh scrape or the cache.
+            "dossier_source": (dossier or {}).get("source"),
+            "dossier_collected_at": (dossier or {}).get("collected_at"),
             "counts": {
                 "posts": avail["n_items"],
                 "posts_with_engagement": avail["engagement_items"],
@@ -150,25 +206,39 @@ class SocialMediaAnalyzer:
 
         try:
             # ═══════════════════════════════════════════════════════════════
-            # PHASE 2: DATA COLLECTION
+            # PHASE 2: DATA COLLECTION (cache-aware)
             # ═══════════════════════════════════════════════════════════════
-            from .deep_collector import create_deep_collector
-            
-            # Use the new Deep Dossier Collector
-            collector = create_deep_collector()
-            
-            if mode == 'quick':
-                # Quick Scan: 10 seconds, limited data
-                dossier_data = collector.quick_scan(platform, profile_id)
-            else:
-                # Deep Dossier: 2-5 mins, full data
-                dossier_data = collector.deep_dossier(
-                    platform=platform, 
-                    username=profile_id,
-                    include_comments=True,
-                    include_transcripts=True
+            cache = self._cache_lookup(platform, profile_id)
+            if cache is not None:
+                dossier_data = dict(cache)
+                dossier_data['source'] = 'cache'
+                self.logger.info(
+                    f"Reusing cached dossier for {platform}/{profile_id} "
+                    f"(collected {dossier_data.get('collected_at')}); 0 credits spent"
                 )
-            
+            else:
+                from .deep_collector import create_deep_collector
+
+                # Use the new Deep Dossier Collector
+                collector = create_deep_collector()
+
+                if mode == 'quick':
+                    # Quick Scan: 10 seconds, limited data
+                    dossier_data = collector.quick_scan(platform, profile_id)
+                else:
+                    # Deep Dossier: 2-5 mins, full data
+                    dossier_data = collector.deep_dossier(
+                        platform=platform,
+                        username=profile_id,
+                        include_comments=True,
+                        include_transcripts=True
+                    )
+                dossier_data['source'] = 'live'
+                # Only a run that actually collected something may seed the cache;
+                # caching an empty dossier would serve emptiness for the whole TTL.
+                if dossier_data.get('profile') or dossier_data.get('content'):
+                    self._cache_store(platform, profile_id, dossier_data)
+
             # ═══════════════════════════════════════════════════════════════
             self.logger.info(f"Dossier Data Keys: {list(dossier_data.keys())}")
             self.logger.info(f"Profile Data collected: {dossier_data.get('profile', {})}")
@@ -227,6 +297,7 @@ class SocialMediaAnalyzer:
                     "analysis_date": datetime.now().isoformat(),
                     "analyzer_version": "2.0.0 (Vanta Deep Intelligence)",
                     "collection_mode": mode.lower(),
+                    "dossier_source": dossier_data.get("source"),
                 },
                 
                 # Debug data

@@ -240,15 +240,16 @@ def load_user_context(user_id: Optional[int]) -> Dict[str, Any]:
     gets an empty key dict - clients then fall back to server env vars.
     """
     if user_id is None:
-        return {"keys": {}, "preferred_model": None, "default_mode": "deep"}
+        return {"user_id": None, "keys": {}, "preferred_model": None, "default_mode": "deep"}
     from .models.user import UserSettings
     from app.utils.config import decrypt_api_keys
     session = auth_session()
     try:
         row = session.query(UserSettings).filter_by(user_id=user_id).first()
         if row is None:
-            return {"keys": {}, "preferred_model": None, "default_mode": "deep"}
+            return {"user_id": user_id, "keys": {}, "preferred_model": None, "default_mode": "deep"}
         return {
+            "user_id": user_id,
             "keys": decrypt_api_keys(row.byok_keys_enc),
             "preferred_model": row.preferred_model,
             "default_mode": row.default_mode or "deep",

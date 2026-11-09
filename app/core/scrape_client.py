@@ -34,9 +34,23 @@ RUN_CREDIT_ESTIMATES = {"deep": 14, "quick": 4}
 
 
 def record_credits(remaining: Any) -> None:
-    """Persist the last observed provider balance (best effort)."""
+    """Persist the last observed provider balance (best effort).
+
+    Written to the database when a Flask app context is available, because the
+    JSON file is local to the machine that ran the collection: a hosted
+    instance never saw the file, so it reported "unknown" and the pre-flight
+    guard could never block a run the balance could not cover. The file is
+    still written as a fallback for CLI/desktop use.
+    """
     if not isinstance(remaining, (int, float)):
         return
+    try:
+        from flask import has_app_context
+        if has_app_context():
+            from app.web.models.dossier import record_provider_credits
+            record_provider_credits("scrapecreators", int(remaining))
+    except Exception as exc:  # database persistence must never break collection
+        logger.debug(f"Could not persist provider credits to the database: {exc}")
     try:
         os.makedirs(os.path.dirname(_USAGE_PATH), exist_ok=True)
         payload = {}
@@ -60,8 +74,19 @@ def read_credits(path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Return the last observed balance, if any.
 
     ``path`` lets a caller (or a test) point at a different usage file instead
-    of inheriting whatever this machine last recorded.
+    of inheriting whatever this machine last recorded. The database wins when
+    it has a row (it is the value the collection process actually observed);
+    the file remains for CLI and desktop runs.
     """
+    try:
+        from flask import has_app_context
+        if has_app_context():
+            from app.web.models.dossier import read_provider_credits
+            stored = read_provider_credits("scrapecreators")
+            if stored and stored.get("credits_remaining") is not None:
+                return stored
+    except Exception as exc:
+        logger.debug(f"Could not read provider credits from the database: {exc}")
     try:
         with open(path or _USAGE_PATH, "r") as fh:
             return (json.load(fh) or {}).get("scrapecreators")
@@ -140,6 +165,9 @@ class ScrapeCreatorsClient:
             elif response.status_code == 402:
                 # Distinct marker so callers (DeepCollector) can fall back to Apify.
                 # NOTE: do NOT match on 'credit' in body — successful 200s contain credits_remaining.
+                # Record the zero this proves, so the next run is blocked before
+                # it starts instead of returning an empty dossier.
+                record_credits(0)
                 raise ScrapeCreatorsError(f"CREDITS_EXHAUSTED: {response.status_code} - {response.text[:200]}")
             elif response.status_code == 401:
                 raise ScrapeCreatorsError("Invalid API key")

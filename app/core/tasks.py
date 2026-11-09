@@ -78,7 +78,7 @@ celery_app.conf.update(
 def purge_expired_data() -> Dict[str, int]:
     """Delete posts and quote receipts past their configured retention window."""
     from app.utils.config import retention_days
-    from app.web.models.dossier import purge_expired_results
+    from app.web.models.dossier import purge_expired_results, purge_expired_cache
 
     flask_app = create_app()
     with flask_app.app_context():
@@ -88,6 +88,9 @@ def purge_expired_data() -> Dict[str, int]:
             raw_days=windows["raw_content_days"],
             quote_days=windows["quote_receipt_days"],
         )
+        # Cached dossiers hold raw post text too, so they expire with the
+        # retention sweep rather than lingering past their own TTL.
+        result["cache_purged"] = purge_expired_cache(db.session)
         logger.info(f"Retention purge: {result} (windows={windows})")
         return result
 

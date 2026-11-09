@@ -79,6 +79,15 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   `FRONTEND_URL` is set on Render so page requests to the API host (which serves no compiled UI)
   302 to the Vercel app; `/api/*` still answers normally. `https://profile-scope.vercel.app` is the
   older, duplicate Vercel project (root dir `frontend`, Dec 2025) still serving a stale build.
+- **Dossier cache + spend guard made real (Nov 2026):** `dossier_cache` stores the last raw dossier
+  per (user, platform, profile) with a TTL (`DOSSIER_CACHE_TTL_HOURS`, default 12), so re-analysis and
+  regeneration reuse collected data instead of spending another ~14 credits; empty dossiers are never
+  cached, expired entries are purged by the retention job, and the coverage strip says when a run
+  reused a cached dossier (with its collection time). The last observed provider balance now lives in
+  `provider_credit_usage` (Postgres) rather than a JSON file beside the code — that file was invisible
+  to any deployed instance, which is why the pre-flight guard saw "unknown" and let task 18 run into a
+  402. A `CREDITS_EXHAUSTED` response now records a zero balance, so the next run is refused with 402
+  before it starts instead of returning an empty dossier. Migration `f4c8d2e15b31` (applied to Neon).
 - **Password reset (Nov 2026):** `POST /api/auth/forgot-password` mails a one-time link and
   `POST /api/auth/reset-password` redeems it. Only the SHA-256 hash of the token is stored
   (`password_reset_token`, migration `e3b7c1a94d20`, applied to Neon), links expire in 30 minutes,

@@ -344,6 +344,62 @@ def test_quick_scan_posts_are_readable_by_every_analyzer():
     assert {i["section"] for i in coverage["measured"]} >= {"sentiment", "content"}
 
 
+def test_second_run_reuses_the_cached_dossier_instead_of_scraping(app, monkeypatch):
+    """Re-analysis must not spend credits on data it already has.
+
+    The cache is what makes regeneration and repeated analysis free: the first
+    run collects (and pays), the second reads the stored dossier.
+    """
+    from app.core.analyzer import SocialMediaAnalyzer
+    from app.web.models.dossier import store_cached_dossier, DossierCache
+    from app.web.models import db
+    from app.utils.config import set_user_context, reset_user_context
+
+    dossier = {
+        "collection_mode": "deep",
+        "platform": "facebook",
+        "username": "cached_subject",
+        "collected_at": "2026-11-01T10:00:00",
+        "profile": {"username": "cached_subject", "follower_count": 10},
+        "content": [{"text": "a cached post"}],
+        "errors": [],
+    }
+    with app.app_context():
+        # Cache rows are scoped by owner id; no FK is enforced, so a literal id
+        # keeps this test independent of the auth fixtures.
+        user_id = 42
+        store_cached_dossier(db.session, user_id, "facebook", "cached_subject", dossier, ttl_hours=12)
+        assert db.session.query(DossierCache).count() == 1
+
+        token = set_user_context({"user_id": user_id, "keys": {}, "preferred_model": None,
+                                  "default_mode": "deep"})
+        try:
+            analyzer = SocialMediaAnalyzer()
+            cached = analyzer._cache_lookup("facebook", "cached_subject")
+            assert cached is not None
+            assert cached["content"] == [{"text": "a cached post"}]
+
+            # Expiry is what forces a new collection.
+            from datetime import datetime, timedelta
+            from app.web.models.dossier import get_cached_dossier
+            assert get_cached_dossier(db.session, user_id, "facebook", "cached_subject",
+                                      now=datetime.utcnow() + timedelta(hours=13)) is None
+        finally:
+            reset_user_context(token)
+
+
+def test_exhausted_credits_are_recorded_so_the_next_run_is_blocked(app):
+    """A 402 must leave a zero balance behind, not just an error message."""
+    from app.core.scrape_client import record_credits, read_credits
+    from app.web.models.dossier import purge_expired_cache  # noqa: F401 (import check)
+
+    with app.app_context():
+        record_credits(0)
+        observed = read_credits("/nonexistent/usage.json")
+        assert observed is not None
+        assert observed["credits_remaining"] == 0
+
+
 def test_coverage_reports_collection_failures():
     """An empty run must say why it is empty, not just show missing sections."""
     from app.core.analyzer import SocialMediaAnalyzer

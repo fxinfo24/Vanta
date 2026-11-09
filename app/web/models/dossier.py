@@ -249,6 +249,136 @@ class DossierSnapshot(db.Model):
             },
         }
 
+class DossierCache(db.Model):
+    """Last collected raw dossier for one (user, platform, profile).
+
+    A deep run costs ~14 provider credits, and re-running the analysis on data
+    that has not changed wastes all of them. The payload stored here is exactly
+    the raw dossier a run would have collected, so re-analysis reads it instead
+    of scraping again; only an expired entry triggers a new collection.
+
+    Scoped per user: two users watching the same handle each pay for their own
+    collection rather than reading each other's captured data.
+    """
+    __tablename__ = 'dossier_cache'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, index=True, nullable=False)
+    platform = db.Column(db.String(50), nullable=False)
+    profile_id = db.Column(db.String(255), nullable=False)
+    payload = db.Column(db.JSON, nullable=False)
+    collected_at = db.Column(db.DateTime, nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'platform', 'profile_id', name='uq_dossier_cache_key'),
+    )
+
+    def to_dict(self):
+        return {
+            'platform': self.platform,
+            'profile_id': self.profile_id,
+            'collected_at': self.collected_at.isoformat() if self.collected_at else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'has_payload': bool(self.payload),
+        }
+
+
+class ProviderCreditUsage(db.Model):
+    """Last balance a data provider reported, persisted so it survives deploys.
+
+    The balance used to live in a JSON file next to the code, which meant a
+    hosted instance always reported "unknown" and the pre-flight guard could
+    never fire - the exact failure that let a run collect zero posts.
+    """
+    __tablename__ = 'provider_credit_usage'
+
+    provider = db.Column(db.String(50), primary_key=True)
+    credits_remaining = db.Column(db.Integer, nullable=True)
+    observed_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'credits_remaining': self.credits_remaining,
+            'observed_at': self.observed_at.isoformat() if self.observed_at else None,
+        }
+
+
+def record_provider_credits(provider: str, remaining) -> bool:
+    """Upsert an observed balance. Returns False when it could not be stored."""
+    if remaining is None:
+        return False
+    try:
+        value = int(remaining)
+    except (TypeError, ValueError):
+        return False
+    try:
+        row = db.session.get(ProviderCreditUsage, provider)
+        if row is None:
+            row = ProviderCreditUsage(provider=provider)
+            db.session.add(row)
+        row.credits_remaining = value
+        row.observed_at = datetime.utcnow()
+        db.session.commit()
+        return True
+    except Exception:
+        db.session.rollback()
+        return False
+
+
+def read_provider_credits(provider: str):
+    """Stored balance row as a dict, or None."""
+    try:
+        row = db.session.get(ProviderCreditUsage, provider)
+    except Exception:
+        return None
+    return row.to_dict() if row is not None else None
+
+
+def get_cached_dossier(session, user_id, platform: str, profile_id: str,
+                       now: datetime = None):
+    """Return a fresh cached dossier payload, or None when absent/expired."""
+    now = now or datetime.utcnow()
+    row = session.query(DossierCache).filter_by(
+        user_id=user_id, platform=platform, profile_id=profile_id
+    ).first()
+    if row is None or row.expires_at is None or row.expires_at <= now:
+        return None
+    return row.payload
+
+
+def store_cached_dossier(session, user_id, platform: str, profile_id: str,
+                         payload: dict, collected_at: datetime = None,
+                         ttl_hours: int = 12):
+    """Insert or refresh the cache entry for this subject."""
+    if not isinstance(payload, dict) or not payload:
+        return None
+    now = datetime.utcnow()
+    row = session.query(DossierCache).filter_by(
+        user_id=user_id, platform=platform, profile_id=profile_id
+    ).first()
+    if row is None:
+        row = DossierCache(user_id=user_id, platform=platform, profile_id=profile_id)
+        session.add(row)
+    row.payload = payload
+    row.collected_at = collected_at or now
+    row.expires_at = now + timedelta(hours=max(int(ttl_hours), 1))
+    session.commit()
+    return row
+
+
+def purge_expired_cache(session, now: datetime = None) -> int:
+    """Drop cache entries past their TTL (they hold raw post text)."""
+    now = now or datetime.utcnow()
+    removed = session.query(DossierCache).filter(DossierCache.expires_at <= now).delete(
+        synchronize_session=False
+    )
+    if removed:
+        session.commit()
+    return removed
+
+
 class CrossPlatformProfile(db.Model):
     """
     Links multiple platform profiles to a single human identity.

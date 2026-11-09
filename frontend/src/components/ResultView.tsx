@@ -185,6 +185,10 @@ const CoverageStrip = ({ coverage }: { coverage: any }) => {
   const gaps: string[] = coverage.missing_inputs || [];
   const errors: string[] = coverage.collection_errors || [];
   const counts = coverage.counts || {};
+  // A cached run reads the dossier collected earlier, so its numbers describe
+  // that moment, not now. Saying so is the difference between a stale figure
+  // and a wrong one.
+  const fromCache = coverage.dossier_source === 'cache';
   return (
     <div className="glass-card rounded-2xl p-4 mt-6">
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -204,6 +208,9 @@ const CoverageStrip = ({ coverage }: { coverage: any }) => {
         Based on {counts.posts ?? 0} posts ({counts.posts_with_engagement ?? 0} with engagement metrics),{' '}
         {counts.comments ?? 0} comments
         {gaps.length > 0 && <> · not collected: {gaps.join(', ')}</>}
+        {fromCache && (
+          <> · reused the dossier collected {(coverage.dossier_collected_at || '').slice(0, 16).replace('T', ' ')} UTC (0 credits)</>
+        )}
       </div>
       {errors.length > 0 && (
         <div className="text-[11px] text-rose-300/90 mt-1 break-words">
