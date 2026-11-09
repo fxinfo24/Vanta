@@ -7,6 +7,8 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
+from app.utils.config import DEFAULT_OPENROUTER_MODEL
+
 logger = logging.getLogger("Vanta.LangChain")
 
 
@@ -14,7 +16,7 @@ logger = logging.getLogger("Vanta.LangChain")
 class LangChainConfig:
     """Configuration for LangChain integration"""
     llm_provider: str = "openai"  # openai, anthropic, openrouter
-    model_name: str = "gpt-4"
+    model_name: str = DEFAULT_OPENROUTER_MODEL
     temperature: float = 0.1
     max_tokens: int = 1000
     chunk_size: int = 1000

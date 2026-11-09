@@ -5,8 +5,10 @@ Command line interface for AI-assisted claim analysis
 
 import argparse
 import logging
+import os
 import sys
 
+from app.utils.config import DEFAULT_OPENROUTER_MODEL
 from app.web.models import db
 from app.web.models.verification import Claim
 from .rag_engine import create_rag_engine
@@ -126,13 +128,13 @@ def main():
     analyze_parser = subparsers.add_parser("analyze", help="Analyze single claim")
     analyze_parser.add_argument("claim_id", help="Claim ID to analyze")
     analyze_parser.add_argument("--provider", default="openrouter", help="LLM provider")
-    analyze_parser.add_argument("--model", default="anthropic/claude-3.5-sonnet", help="LLM model")
+    analyze_parser.add_argument("--model", default=os.getenv("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL, help="LLM model")
     analyze_parser.add_argument("--temperature", type=float, default=0.1, help="Temperature")
     
     batch_parser = subparsers.add_parser("batch", help="Batch analyze claims")
     batch_parser.add_argument("--limit", type=int, default=50, help="Max claims to process")
     batch_parser.add_argument("--provider", default="openrouter", help="LLM provider")
-    batch_parser.add_argument("--model", default="anthropic/claude-3.5-sonnet", help="LLM model")
+    batch_parser.add_argument("--model", default=os.getenv("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL, help="LLM model")
     
     stats_parser = subparsers.add_parser("stats", help="View RAG statistics")
     
