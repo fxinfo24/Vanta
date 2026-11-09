@@ -264,15 +264,27 @@ def build_content_analysis_prompt(platform: str, profile_data: Dict[str, Any], p
     """Build a platform-optimized content analysis prompt"""
     ctx = get_platform_context(platform)
     
+    # Dossiers store 'follower_count' (singular); some clients use 'followers_count'.
+    # Normalize so the real follower count reaches the model — a key mismatch
+    # historically rendered as 0 and the model invented a "contradiction".
+    profile_data = {
+        **profile_data,
+        "follower_count": profile_data.get("follower_count") or profile_data.get("followers_count"),
+    }
+    # following/posts are never exposed by some providers (e.g. ScrapeCreators
+    # Facebook) — they arrive as 0 placeholders. Presenting them as real zeros
+    # makes the model invent narratives, so render them as unknown instead.
+    _num = lambda v: f"{v:,}" if v else "unknown (not exposed by provider)"
     profile_summary = f"""
 Profile: @{profile_data.get('username', 'unknown')}
 Name: {profile_data.get('display_name', 'N/A')}
-Bio: {profile_data.get('bio', 'No bio')[:500]}
-Followers: {profile_data.get('follower_count', 0):,}
-Following: {profile_data.get('following_count', 0):,}
-Content Count: {profile_data.get('posts_count', 0):,}
+Bio: {(profile_data.get('bio') or 'No bio')[:500]}
+Followers: {_num(profile_data.get('follower_count'))}
+Following: {_num(profile_data.get('following_count'))}
+Content Count: {_num(profile_data.get('posts_count'))}
 Verified: {profile_data.get('verified', False)}
 Platform: {ctx['name']}
+CRITICAL: Any metric marked 'unknown (not exposed by provider)' is MISSING data, not zero.
 """.strip()
     
     recent_content = "\n".join([
@@ -324,12 +336,17 @@ PLATFORM-SPECIFIC AUTHENTICITY SIGNALS:
 PROFILE METRICS:
 Username: @{profile_data.get('username')}
 Account Created: {profile_data.get('created_at', 'Unknown')}
-Followers: {profile_data.get('follower_count', 0):,}
-Following: {profile_data.get('following_count', 0):,}
-{ctx['content_type'].title()} Count: {profile_data.get('posts_count', 0):,}
+Followers: {(lambda v: f'{v:,}' if v else 'unknown (not exposed by provider)')(profile_data.get('follower_count'))}
+Following: {(lambda v: f'{v:,}' if v else 'unknown (not exposed by provider)')(profile_data.get('following_count'))}
+{ctx['content_type'].title()} Count: {(lambda v: f'{v:,}' if v else 'unknown (not exposed by provider)')(profile_data.get('posts_count'))}
 Verified: {profile_data.get('verified', False)}
 Bio Length: {len(str(profile_data.get('bio', '')))} characters
 Profile Image: {'Present' if profile_data.get('profile_image_url') else 'Missing'}
+
+CRITICAL: Any metric marked 'unknown (not exposed by provider)' is MISSING data, not zero.
+Never treat an unknown metric as evidence (e.g. do not infer purchased followers from an unknown
+following count), and never claim group participation, multimedia usage, or demographic
+composition when the data does not contain them.
 
 PLATFORM CONTEXT:
 {ctx['cultural_context']}

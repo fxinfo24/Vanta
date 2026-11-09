@@ -14,7 +14,13 @@ class ApiService {
     // at a dead Railway deployment and 404'd every call. Deploy the Flask backend
     // (see Dockerfile) first, then set the env var and redeploy the frontend.
     // In development, default to Vite proxy for /api.
-    this.baseURL = import.meta.env.VITE_API_BASE_URL || '/api';
+    // In dev, always use the Vite proxy. A stray exported
+    // VITE_API_BASE_URL (e.g. http://localhost:5000 without /api) would
+    // otherwise bypass the proxy and hit a non-existent route, which the
+    // browser surfaces as a generic "Network Error".
+    this.baseURL = import.meta.env.DEV
+      ? '/api'
+      : import.meta.env.VITE_API_BASE_URL || '/api';
 
     this.api = axios.create({
       baseURL: this.baseURL,
@@ -106,8 +112,14 @@ class ApiService {
     }
   }
 
-  async downloadTaskResults(taskId: number): Promise<Blob> {
-    const response = await this.api.get(`/tasks/${taskId}/download`, { responseType: 'blob' });
+  async downloadTaskResults(taskId: number, format?: string): Promise<Blob> {
+    // Fetches through the authenticated client (Bearer header attached by
+    // the request interceptor). A bare window.open() to /api/... cannot
+    // send the token and is rejected by the auth guard with a 401.
+    const response = await this.api.get(`/tasks/${taskId}/download`, {
+      params: format ? { format } : undefined,
+      responseType: 'blob',
+    });
     return response.data;
   }
 

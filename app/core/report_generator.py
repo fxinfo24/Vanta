@@ -80,7 +80,7 @@ class DossierReportGenerator:
                 "is_verified": profile.get("is_verified", False)
             },
             "summary": data.get("executive_summary") or "Executive summary generation failed or data is unavailable.",
-            "psych": data.get("content_analysis", {}).get("psychological_profile", {}),
+            "psych": data.get("content_analysis", {}).get("personality_traits") or data.get("content_analysis", {}).get("psychological_profile", {}),
             "beliefs": data.get("belief_system") or {},
             "consumer": data.get("consumer_profile") or {},
             "auth": data.get("authenticity") or {},

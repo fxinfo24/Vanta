@@ -67,7 +67,7 @@ Cancel a task (only if status is PENDING or PROCESSING).
 Return JSON results for a completed task.
 
 #### GET /api/tasks/{task_id}/download
-Download results as a `.json` file.
+Download results (`?format=html|pdf|json`, default `json`). Requires the Bearer token — browsers can't attach it via `window.open()`, so the frontend fetches the file through the authenticated API client and opens the resulting blob (new tab for html/pdf print view, file download for json).
 
 ### Apify Endpoints (implemented)
 

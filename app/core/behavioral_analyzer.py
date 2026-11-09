@@ -28,9 +28,9 @@ class BehavioralAnalyzer:
         """
         logger.info(f"Starting behavioral analysis for {dossier_data.get('username')}")
         
-        # Prepare context
-        profile = dossier_data.get('profile', {})
-        content = dossier_data.get('content', [])
+        # Prepare context (older/partial dossiers may store profile: None)
+        profile = dossier_data.get('profile') or {}
+        content = dossier_data.get('content') or []
         bio = profile.get('bio', '') or profile.get('description', '')
         
         # Extract text samples for analysis (limit to prevent token overflow)

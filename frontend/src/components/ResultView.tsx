@@ -50,12 +50,29 @@ const ResultView: React.FC = () => {
     finally { setLoading(false); }
   };
 
-  const handleExport = (format: string) => {
-    // Construct absolute URL using the API service's base URL logic
-    const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api'; // same fallback as services/api.ts
-    // Ensure we don't double slash
-    const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-    window.open(`${cleanBase}/tasks/${id}/download?format=${format}`, '_blank');
+  // A bare window.open() to /api/... cannot carry the Bearer token, so the
+  // auth guard answered 401 and the new tab showed a raw JSON error. Fetch
+  // the file through the authenticated API client (token attached), then
+  // open the resulting blob: html renders in a tab for printing, json is
+  // saved as a file download.
+  const handleExport = async (format: string) => {
+    try {
+      const blob = await api.downloadTaskResults(Number(id), format);
+      const url = URL.createObjectURL(blob);
+      if (format === 'html' || format === 'pdf') {
+        window.open(url, '_blank');
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `dossier_${format}.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      console.error('Export failed:', err);
+    }
   };
 
   if (loading) return (
@@ -67,11 +84,20 @@ const ResultView: React.FC = () => {
   if (!results) return <div>No data found.</div>;
 
   // Prepare Chart Data
-  const psychData = Object.entries(results.content_analysis?.psychological_profile || {})
+  // Backend stores Big 5 scores under `personality_traits`; the old
+  // `psychological_profile` key never existed in stored results.
+  const psychData = Object.entries(
+    results.content_analysis?.personality_traits ||
+    results.content_analysis?.psychological_profile || {}
+  )
     .filter(([_, val]) => typeof val === 'number')
     .map(([key, val]) => ({ subject: key.charAt(0).toUpperCase() + key.slice(1), A: (val as number) * 100, fullMark: 100 }));
 
-  const beliefData = Object.entries(results.belief_system?.['SOCIAL VALUES'] || {})
+  // Backend keys use underscores (SOCIAL_VALUES); keep the spaced variant
+  // as a fallback for older stored results.
+  const beliefData = Object.entries(
+    results.belief_system?.SOCIAL_VALUES || results.belief_system?.['SOCIAL VALUES'] || {}
+  )
     .map(([key, val]) => ({ name: key.replace('_', ' '), value: val, fullMark: 10 }));
 
   const renderTabContent = () => {
@@ -177,14 +203,9 @@ const NetworkTab = ({ results }: { results: AnalysisResult }) => {
     }
   });
 
-  // Mock data if empty (for demo purposes if real data fails)
-  if (nodes.length === 1) {
-    // Add some mocked peers/interests if emptiness makes it look broken
-    ['Interest: Tech', 'Interest: Gaming', 'Peer: @VerifiedUser', 'Platform: Twitter'].forEach((l) => {
-      nodes.push({ id: l, group: 3, radius: 10 });
-      links.push({ source: centerId, target: l, value: 0.5 });
-    });
-  }
+  // No mock fallback: when no network data exists, say so honestly
+  // instead of fabricating peers/interests.
+  const hasNetwork = nodes.length > 1;
 
   return (
     <div className="glass-card p-6 rounded-2xl h-[600px] flex flex-col">
@@ -198,9 +219,15 @@ const NetworkTab = ({ results }: { results: AnalysisResult }) => {
           <span><span className="text-white/40">●</span> Peers/Followers</span>
         </div>
       </div>
-      <div className="flex-1 bg-black/20 rounded-xl overflow-hidden border border-white/5 relative">
-        <NetworkGraph data={{ nodes, links }} width={800} height={500} />
-      </div>
+      {hasNetwork ? (
+        <div className="flex-1 bg-black/20 rounded-xl overflow-hidden border border-white/5 relative">
+          <NetworkGraph data={{ nodes, links }} width={800} height={500} />
+        </div>
+      ) : (
+        <div className="flex-1 flex items-center justify-center text-white/40 italic p-6 text-center">
+          No network data available for this profile.
+        </div>
+      )}
     </div>
   );
 };
@@ -213,8 +240,8 @@ const OverviewTab = ({ results }: { results: AnalysisResult; task: any }) => (
       </h3>
       <div className="grid grid-cols-3 gap-4">
         <StatBox label="Risk Level" value={results.authenticity?.risk_assessment} color={
-          results.authenticity?.risk_assessment === 'High' ? 'text-red-400' :
-            results.authenticity?.risk_assessment === 'Medium' ? 'text-yellow-400' : 'text-emerald-400'
+          ['critical', 'high'].includes(String(results.authenticity?.risk_assessment || '').toLowerCase()) ? 'text-red-400' :
+            String(results.authenticity?.risk_assessment || '').toLowerCase() === 'medium' ? 'text-yellow-400' : 'text-emerald-400'
         } />
         <StatBox label="Bot Probability" value={`${Math.round((results.authenticity?.bot_likelihood || 0) * 100)}%`} />
         <StatBox label="Trust Score" value={`${Math.round((results.authenticity?.overall_authenticity?.score || 0) * 100)}%`} />
@@ -276,7 +303,10 @@ const OverviewTab = ({ results }: { results: AnalysisResult; task: any }) => (
   </div>
 );
 
-const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefData: any[] }) => (
+const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefData: any[] }) => {
+  // Backend stores `POLITICAL_COMPASS` (underscores); tolerate the old spaced key.
+  const compass = results.belief_system?.POLITICAL_COMPASS || results.belief_system?.['POLITICAL COMPASS'] || {};
+  return (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div className="glass-card p-6 rounded-2xl">
       <h3 className="text-xl font-bold text-white mb-4">Political Compass</h3>
@@ -291,12 +321,12 @@ const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefDa
         <div
           className="absolute w-4 h-4 bg-primary-500 rounded-full shadow-[0_0_15px_rgba(59,130,246,1)] z-10"
           style={{
-            left: `${50 + (results.belief_system?.['POLITICAL COMPASS']?.economic_axis || 0) * 5}%`,
-            top: `${50 - (results.belief_system?.['POLITICAL COMPASS']?.social_axis || 0) * 5}%`
+            left: `${50 + (compass?.economic_axis || 0) * 5}%`,
+            top: `${50 - (compass?.social_axis || 0) * 5}%`
           }}
         ></div>
         <div className="absolute bottom-2 text-sm font-bold text-white bg-black/50 px-3 py-1 rounded-full">
-          {results.belief_system?.['POLITICAL COMPASS']?.label || 'Unknown'}
+          {compass?.label || 'Unknown'}
         </div>
       </div>
     </div>
@@ -315,7 +345,8 @@ const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefDa
       </div>
     </div>
   </div>
-);
+  );
+};
 
 const ConsumerTab = ({ results }: { results: AnalysisResult }) => (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -337,10 +368,18 @@ const ConsumerTab = ({ results }: { results: AnalysisResult }) => (
     <div className="glass-card p-6 rounded-2xl">
       <h3 className="text-xl font-bold text-white mb-4">Purchase Forecast (90 Days)</h3>
       <ul className="space-y-3">
-        {results.consumer_profile?.forecast_90_day?.predicted_purchases?.map((item: string, i: number) => (
+        {results.consumer_profile?.forecast_90_day?.predicted_purchases?.map((item: any, i: number) => (
           <li key={i} className="flex gap-3 items-start">
             <span className="text-primary-400 mt-1">➜</span>
-            <span className="text-white/80">{item}</span>
+            <div>
+              <div className="text-white/80">{typeof item === 'string' ? item : item?.product || '—'}</div>
+              {item && typeof item !== 'string' && item.confidence != null && (
+                <div className="text-white/40 text-xs mt-0.5">Confidence {Math.round(item.confidence * 100)}%</div>
+              )}
+              {item && typeof item !== 'string' && item.reasoning && (
+                <div className="text-white/50 text-xs mt-0.5">{item.reasoning}</div>
+              )}
+            </div>
           </li>
         ))}
       </ul>
@@ -348,7 +387,10 @@ const ConsumerTab = ({ results }: { results: AnalysisResult }) => (
   </div>
 );
 
-const PsychTab = ({ results: _results, psychData }: { results: AnalysisResult, psychData: any[] }) => (
+const PsychTab = ({ results, psychData }: { results: AnalysisResult, psychData: any[] }) => {
+  const ws = results.content_analysis?.writing_style || {};
+  const hasStyle = Object.keys(ws).length > 0;
+  return (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div className="glass-card p-6 rounded-2xl h-96">
       <h3 className="text-xl font-bold text-white mb-4">Personality (Big 5)</h3>
@@ -364,15 +406,26 @@ const PsychTab = ({ results: _results, psychData }: { results: AnalysisResult, p
     </div>
     <div className="glass-card p-6 rounded-2xl">
       <h3 className="text-xl font-bold text-white mb-4">Communication Style</h3>
-      <div className="grid grid-cols-2 gap-4">
-        {/* Communication metrics could go here if structured, using raw text for now if not */}
-        <div className="col-span-2 text-white/70 italic p-4 bg-white/5 rounded-xl">
-          Only available in Deep Dossier mode.
+      {hasStyle ? (
+        <div className="space-y-4">
+          <div>
+            <div className="text-xs text-white/40 uppercase mb-1">Tone</div>
+            <div className="text-lg capitalize text-white">{ws.tone?.replace(/_/g, ' ') || '-'}</div>
+          </div>
+          <ProgressBar label="Formality" value={Math.round((ws.formality || 0) * 100)} color="bg-blue-500" />
+          <ProgressBar label="Humor" value={Math.round((ws.humor_level || 0) * 100)} color="bg-purple-500" />
+          <ProgressBar label="Emoji usage" value={Math.round((ws.emoji_usage || 0) * 100)} color="bg-yellow-500" />
+          <ProgressBar label="Platform literacy" value={Math.round((ws.platform_literacy || 0) * 100)} color="bg-emerald-500" />
         </div>
-      </div>
+      ) : (
+        <div className="text-white/40 italic p-4 bg-white/5 rounded-xl">
+          No writing-style data in this result.
+        </div>
+      )}
     </div>
   </div>
-);
+  );
+};
 
 const StatBox = ({ label, value, color = 'text-white' }: any) => (
   <div className="bg-white/5 p-4 rounded-xl text-center">

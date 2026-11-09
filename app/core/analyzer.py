@@ -143,6 +143,7 @@ class SocialMediaAnalyzer:
                 # New Vanta Intelligence Sections
                 "belief_system": full_report.get("belief_system", {}),
                 "consumer_profile": full_report.get("consumer_profile", {}),
+                "behavioral_profile": full_report.get("behavioral_profile", {}),
                 "executive_summary": full_report.get("executive_summary", ""),
                 
                 "metadata": {

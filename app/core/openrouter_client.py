@@ -248,14 +248,29 @@ Return comprehensive, platform-specific insights that leverage {ctx['name']}'s u
     def analyze_authenticity(self, profile_data: Dict[str, Any], content_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Authenticity analysis using Grok 4.1 Fast"""
         
+        # Dossiers store 'follower_count' (singular); some clients use
+        # 'followers_count'. Normalize so the real follower count reaches the
+        # model — a key mismatch historically rendered as 0 and the model
+        # hallucinated a "metric contradiction" around it.
+        profile_data = {
+            **profile_data,
+            "followers_count": profile_data.get("followers_count") or profile_data.get("follower_count"),
+        }
+        # following/posts are never exposed by some providers (e.g. ScrapeCreators
+        # Facebook) — they arrive as 0 placeholders. Presenting them as real zeros
+        # makes the model invent narratives ("purchased followers", "metric
+        # contradictions"), so render them as unknown instead.
+        def _metric(key, raw=None):
+            val = raw if raw is not None else profile_data.get(key)
+            return f"{val:,}" if val else "unknown (not exposed by provider)"
         profile_metrics = f"""
 Username: @{profile_data.get('username')}
 Account Age: {profile_data.get('created_at', 'Unknown')}
-Followers: {profile_data.get('followers_count', 0):,}
-Following: {profile_data.get('following_count', 0):,}
-Posts: {profile_data.get('posts_count', 0):,}
+Followers: {_metric('followers_count')}
+Following: {_metric('following_count')}
+Posts: {_metric('posts_count')}
 Verified: {profile_data.get('verified', False)}
-Bio Length: {len(profile_data.get('bio', ''))} characters
+Bio Length: {len(profile_data.get('bio') or '')} characters
 Profile Image: {'Present' if profile_data.get('profile_image_url') else 'Missing'}
         """.strip()
         
