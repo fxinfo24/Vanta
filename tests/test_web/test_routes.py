@@ -942,3 +942,17 @@ def test_verification_gap_is_a_data_gap_not_a_red_flag():
     ])
     assert evidence == ["Account was created recently"]
     assert len(gaps) == 1
+
+
+def test_balance_recorded_with_another_key_does_not_block(app, monkeypatch):
+    """A key change invalidates the stored balance instead of blocking runs."""
+    from app.core.scrape_client import _key_fingerprint, read_credits
+    from app.web.models.dossier import record_provider_credits
+
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", "key-one")
+    with app.app_context():
+        assert record_provider_credits("scrapecreators", 0, _key_fingerprint())
+        # Same key: the zero still applies.
+        assert read_credits()["stale_key"] is False
+        monkeypatch.setenv("SCRAPECREATORS_API_KEY", "key-two")
+        assert read_credits()["stale_key"] is True

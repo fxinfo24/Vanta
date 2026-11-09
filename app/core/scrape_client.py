@@ -3,6 +3,7 @@ ScrapeCreators API Client for Social Media Data Collection
 Universal social media scraping using ScrapeCreators API
 """
 
+import hashlib
 import json
 import os
 import requests
@@ -33,6 +34,26 @@ _USAGE_PATH = os.path.join(_PROJECT_ROOT, "data", "provider_usage.json")
 RUN_CREDIT_ESTIMATES = {"deep": 14, "quick": 4}
 
 
+def _key_fingerprint() -> Optional[str]:
+    """Short hash of the configured provider key, never the key itself.
+
+    A balance belongs to one provider account. After a key change (top-up on a
+    new account, rotation) the stored number describes an account that is no
+    longer in use, so it must not block runs: it is reported as outdated and
+    refreshed by the next collection instead.
+    """
+    key = os.getenv("SCRAPECREATORS_API_KEY") or ""
+    if not key:
+        try:
+            from app.utils.config import resolve_api_key
+            key = resolve_api_key("SCRAPECREATORS_API_KEY") or ""
+        except Exception:
+            key = ""
+    if not key:
+        return None
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
 def record_credits(remaining: Any) -> None:
     """Persist the last observed provider balance (best effort).
 
@@ -48,7 +69,7 @@ def record_credits(remaining: Any) -> None:
         from flask import has_app_context
         if has_app_context():
             from app.web.models.dossier import record_provider_credits
-            record_provider_credits("scrapecreators", int(remaining))
+            record_provider_credits("scrapecreators", int(remaining), _key_fingerprint())
     except Exception as exc:  # database persistence must never break collection
         logger.debug(f"Could not persist provider credits to the database: {exc}")
     try:
@@ -84,6 +105,11 @@ def read_credits(path: Optional[str] = None) -> Optional[Dict[str, Any]]:
             from app.web.models.dossier import read_provider_credits
             stored = read_provider_credits("scrapecreators")
             if stored and stored.get("credits_remaining") is not None:
+                current = _key_fingerprint()
+                stored["stale_key"] = bool(
+                    stored.get("key_fingerprint") and current
+                    and stored["key_fingerprint"] != current
+                )
                 return stored
     except Exception as exc:
         logger.debug(f"Could not read provider credits from the database: {exc}")

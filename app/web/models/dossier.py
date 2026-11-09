@@ -465,16 +465,20 @@ class ProviderCreditUsage(db.Model):
 
     provider = db.Column(db.String(50), primary_key=True)
     credits_remaining = db.Column(db.Integer, nullable=True)
+    # Fingerprint of the API key that produced this balance: the number belongs
+    # to one provider account, so a key change makes it meaningless.
+    key_fingerprint = db.Column(db.String(32), nullable=True)
     observed_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
         return {
             'credits_remaining': self.credits_remaining,
+            'key_fingerprint': self.key_fingerprint,
             'observed_at': self.observed_at.isoformat() if self.observed_at else None,
         }
 
 
-def record_provider_credits(provider: str, remaining) -> bool:
+def record_provider_credits(provider: str, remaining, key_fingerprint=None) -> bool:
     """Upsert an observed balance. Returns False when it could not be stored."""
     if remaining is None:
         return False
@@ -488,6 +492,8 @@ def record_provider_credits(provider: str, remaining) -> bool:
             row = ProviderCreditUsage(provider=provider)
             db.session.add(row)
         row.credits_remaining = value
+        if key_fingerprint:
+            row.key_fingerprint = key_fingerprint
         row.observed_at = datetime.utcnow()
         db.session.commit()
         return True

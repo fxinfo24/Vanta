@@ -516,6 +516,21 @@ def _provider_budget(mode: str) -> dict:
     observed = read_credits(current_app.config.get("PROVIDER_USAGE_PATH")) or {}
     remaining = observed.get("credits_remaining")
     needed = RUN_CREDIT_ESTIMATES.get(mode, RUN_CREDIT_ESTIMATES["deep"])
+    if observed.get("stale_key"):
+        # Recorded against a different provider key (new account or rotation):
+        # the number says nothing about the key in use now, so it is reported
+        # but not allowed to block. The next collection refreshes it.
+        return {
+            "known": False,
+            "remaining": None,
+            "needed": needed,
+            "enough": True,
+            "observed_at": observed.get("observed_at"),
+            "message": (
+                "Balance was recorded with a different provider API key, so it no longer "
+                "applies. It will refresh on the next collection."
+            ),
+        }
     if remaining is None:
         return {
             "known": False,
