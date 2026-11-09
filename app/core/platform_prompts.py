@@ -275,6 +275,15 @@ def build_content_analysis_prompt(platform: str, profile_data: Dict[str, Any], p
     # Facebook) — they arrive as 0 placeholders. Presenting them as real zeros
     # makes the model invent narratives, so render them as unknown instead.
     _num = lambda v: f"{v:,}" if v else "unknown (not exposed by provider)"
+    _verified = profile_data.get('verified')
+    _verified_str = 'Yes' if _verified else ('No' if _verified is False else 'unknown (not exposed by provider)')
+    _has_media = any(
+        str(p.get('media_type') or '').lower() not in ('', 'unknown')
+        for p in (posts or []) if isinstance(p, dict)
+    )
+    _has_engagement = any(
+        (p.get('likes') or p.get('reactions') or p.get('shares') or 0) for p in (posts or []) if isinstance(p, dict)
+    )
     profile_summary = f"""
 Profile: @{profile_data.get('username', 'unknown')}
 Name: {profile_data.get('display_name', 'N/A')}
@@ -282,9 +291,15 @@ Bio: {(profile_data.get('bio') or 'No bio')[:500]}
 Followers: {_num(profile_data.get('follower_count'))}
 Following: {_num(profile_data.get('following_count'))}
 Content Count: {_num(profile_data.get('posts_count'))}
-Verified: {profile_data.get('verified', False)}
+Verified: {_verified_str}
 Platform: {ctx['name']}
+DATA BOUNDARIES - what this dataset does NOT contain:
+- {'NO media-type metadata exists in these samples (every item media_type=unknown).' if not _has_media else 'Some samples carry media metadata.'} Absence of media in these samples is NOT evidence of absence on the account. Do not state 'no video/Reels/Live usage' or 'zero multimedia' as fact.
+- {'NO engagement metrics (likes/shares/reactions) were collected for these samples.' if not _has_engagement else 'Engagement metrics are included per sample.'} Do not state engagement levels, 'near-zero engagement', 'shadow-reach', 'algorithmic suppression', or reach claims - we did not measure them.
+- No group membership/participation data exists in this dataset at all. Never claim group absence or presence.
+- No commenter demographic breakdowns exist beyond the tiny sample of collected comments (n<=5). Never generalize audience demographics ('male-dominated', 'educated urban') from a handful of comments.
 CRITICAL: Any metric marked 'unknown (not exposed by provider)' is MISSING data, not zero.
+Never treat an unknown metric or a missing data stream as evidence. Ground every claim in the profile metrics and samples above.
 """.strip()
     
     recent_content = "\n".join([
@@ -347,6 +362,11 @@ CRITICAL: Any metric marked 'unknown (not exposed by provider)' is MISSING data,
 Never treat an unknown metric as evidence (e.g. do not infer purchased followers from an unknown
 following count), and never claim group participation, multimedia usage, or demographic
 composition when the data does not contain them.
+DATA BOUNDARIES - this dataset contains NO media-type metadata, NO engagement metrics
+(likes/shares/reactions), NO group membership data, and NO audience demographic breakdowns.
+Absence of such data in samples is NOT evidence of absence on the account: do NOT state
+'no video/Reels', 'zero multimedia', 'near-zero engagement', 'shadow suppression' or any
+reach/engagement claim as a flag. State only what the metrics above actually show.
 
 PLATFORM CONTEXT:
 {ctx['cultural_context']}

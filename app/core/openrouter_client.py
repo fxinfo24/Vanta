@@ -90,8 +90,46 @@ class OpenRouterClient:
         from app.utils.config import resolve_openrouter_model
         _m = resolve_openrouter_model()
         return {k: _m for k in self._model_keys}
-    
-    def analyze(self, prompt: str, system_prompt: str = None, model_type: str = "general") -> Dict[str, Any]:
+
+    @staticmethod
+    def _clean_json_text(text: str) -> str:
+        """Strip markdown fences from an LLM completion, keeping the JSON body."""
+        clean = (text or "").strip()
+        if clean.startswith("```json"):
+            clean = clean[7:]
+        if clean.startswith("```"):
+            clean = clean[3:]
+        if clean.endswith("```"):
+            clean = clean[:-3]
+        return clean.strip()
+
+    @staticmethod
+    def _parse_json(clean_text: str) -> Any:
+        """Parse JSON, falling back to the first-to-last-brace span
+        (models sometimes wrap JSON in prose)."""
+        try:
+            return json.loads(clean_text)
+        except json.JSONDecodeError:
+            start = clean_text.find("{")
+            end = clean_text.rfind("}")
+            if start != -1 and end > start:
+                return json.loads(clean_text[start:end + 1])
+            raise
+
+    @staticmethod
+    def _is_truncation_error(err: json.JSONDecodeError) -> bool:
+        """Heuristics for output cut off by max_tokens:
+        the JSON ends mid-structure instead of being malformed."""
+        msg = str(err)
+        return any(sig in msg for sig in (
+            "Expecting ',' delimiter",
+            "Expecting property name enclosed in double quotes",
+            "Unterminated string",
+            "Expecting value",
+            "Expecting ':' delimiter",
+        ))
+
+    def analyze(self, prompt: str, system_prompt: str = None, model_type: str = "general", max_tokens: int = 6000) -> Dict[str, Any]:
         """
         Generic analysis method for external analyzers.
         Returns parsed JSON response.
@@ -111,26 +149,37 @@ class OpenRouterClient:
                 messages=messages,
                 model=model,
                 temperature=0.3, # Low temp for structured data
-                max_tokens=6000  # Nemotron reasoning models burn tokens thinking; 3000 truncates long JSON
+                max_tokens=max_tokens  # Nemotron reasoning models burn tokens thinking; 3000 truncates long JSON
             ) or ""
+            # Nemotron occasionally returns an empty completion; one retry
+            # turns a hard parse failure into a clean result on transient empties.
+            if not response.strip():
+                logger.warning(f"Empty completion for model_type={model_type}, retrying once")
+                response = self._make_request(
+                    messages=messages,
+                    model=model,
+                    temperature=0.3,
+                    max_tokens=max_tokens
+                ) or ""
+            if not response.strip():
+                raise ValueError(f"Empty LLM response for model_type={model_type} after retry")
             
-            # Auto-clean markdown + extract first JSON object (Nemotron sometimes
-            # wraps JSON in prose; naive strip() caused JSON parse failures)
-            clean_response = response.strip()
-            if clean_response.startswith("```json"):
-                clean_response = clean_response[7:]
-            if clean_response.startswith("```"):
-                clean_response = clean_response[3:]
-            if clean_response.endswith("```"):
-                clean_response = clean_response[:-3]
-            clean_response = clean_response.strip()
+            clean_response = self._clean_json_text(response)
             try:
-                return json.loads(clean_response)
-            except json.JSONDecodeError:
-                start = clean_response.find("{")
-                end = clean_response.rfind("}")
-                if start != -1 and end > start:
-                    return json.loads(clean_response[start:end + 1])
+                return self._parse_json(clean_response)
+            except json.JSONDecodeError as e:
+                # Truncated output (hit max_tokens mid-JSON) is recoverable:
+                # re-request ONCE with double the token budget.
+                if self._is_truncation_error(e):
+                    logger.warning(f"Truncated JSON for model_type={model_type} ({e}); retrying with larger max_tokens")
+                    retry = self._make_request(
+                        messages=messages,
+                        model=model,
+                        temperature=0.3,
+                        max_tokens=min(max_tokens * 2, 12000)
+                    ) or ""
+                    if retry.strip():
+                        return self._parse_json(self._clean_json_text(retry))
                 raise
             
         except json.JSONDecodeError as e:
@@ -282,7 +331,17 @@ Profile Image: {'Present' if profile_data.get('profile_image_url') else 'Missing
                 "content": """You are a cybersecurity expert specializing in fake account detection and 
                 social media authenticity analysis. Analyze profiles for signs of automation, bot behavior, 
                 purchased followers, and other authenticity issues.
-                CRITICAL: If 'Verified' is True, start with a high base trust score (>0.8) unless you find specific evidence of compromise (hacked verified account)."""
+                CRITICAL: If 'Verified' is True, start with a high base trust score (>0.8) unless you find specific evidence of compromise (hacked verified account).
+                CRITICAL: Any metric marked 'unknown (not exposed by provider)' is MISSING data, not zero.
+                Never treat an unknown metric as evidence (e.g. do not infer purchased followers from an
+                unknown following count), and never claim group participation, multimedia usage, or
+                demographic composition when the data does not contain them.
+                DATA BOUNDARIES - this dataset contains NO media-type metadata (every sample
+                media_type=unknown), NO engagement metrics (likes/shares/reactions), NO group
+                membership data, and NO audience demographic breakdowns. Absence of such data in
+                the samples is NOT evidence of absence on the account: do NOT state 'no video/Reels',
+                'zero multimedia', 'near-zero engagement', 'shadow suppression' or any reach/engagement
+                claim as a flag. State only what the metrics above actually show."""
             },
             {
                 "role": "user",

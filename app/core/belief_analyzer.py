@@ -93,7 +93,9 @@ CALIBRATION RULES (mandatory):
         Format as pure JSON.
         """
         
-        return self.ai.analyze(prompt, system_prompt, model_type="belief_analysis")
+        # Belief schema + mandatory per-claim evidence is the largest LLM output
+        # in the system; 6000 truncates it mid-JSON on content-rich profiles.
+        return self.ai.analyze(prompt, system_prompt, model_type="belief_analysis", max_tokens=9000)
 
     def forecast_stance(self, profile: Dict[str, Any], unexpected_event: str) -> Dict[str, Any]:
         """
@@ -127,7 +129,9 @@ CALIBRATION RULES (mandatory):
         5. potential_contradiction: Would this event expose hypocracy based on past views?
         """
         
-        return self.ai.analyze(prompt, system_prompt, model_type="belief_analysis")
+        # Belief schema + mandatory per-claim evidence is the largest LLM output
+        # in the system; 6000 truncates it mid-JSON on content-rich profiles.
+        return self.ai.analyze(prompt, system_prompt, model_type="belief_analysis", max_tokens=9000)
         
     def _extract_opinionated_text(self, data: Dict) -> List[str]:
         """Helper to extract text likely to contain values/opinions"""
