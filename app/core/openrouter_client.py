@@ -190,6 +190,19 @@ def _filter_unbacked_flags(flags: Any, avail: Dict[str, Any]) -> tuple:
     return kept, dropped, reasons
 
 
+# A provider may have no vanity handle to return and send the numeric user id
+# instead. That is how the platform identifies the account, not something the
+# account did, so a flag about it says nothing about authenticity.
+_NUMERIC_HANDLE_FLAG_RE = re.compile(
+    r"numeric\s+(handle|username|user\s*id)|\bhandle\b.{0,40}\bnumeric", re.IGNORECASE
+)
+
+
+def _handle_is_platform_id(profile_data: Optional[Dict[str, Any]]) -> bool:
+    handle = str((profile_data or {}).get("username") or "").lstrip("@")
+    return bool(re.fullmatch(r"\d{6,}", handle))
+
+
 def _apply_flag_grounding(result: Dict[str, Any], avail: Dict[str, Any],
                           profile_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Filter indicators, split out data gaps, and record every removal."""
@@ -198,9 +211,21 @@ def _apply_flag_grounding(result: Dict[str, Any], avail: Dict[str, Any],
     dropped_all: List[str] = []
     reasons: set = set()
     expected_rate = _engagement_rate_percent(avail, profile_data or {})
+    platform_id_handle = _handle_is_platform_id(profile_data)
 
     for key in ("red_flags", "green_flags"):
         kept, dropped, why = _filter_unbacked_flags(result.get(key), avail)
+
+        if platform_id_handle:
+            checked = []
+            for flag in kept:
+                text = flag if isinstance(flag, str) else json.dumps(flag, ensure_ascii=False)
+                if _NUMERIC_HANDLE_FLAG_RE.search(text):
+                    dropped.append(flag)
+                    why = why | {"a numeric platform id described as a suspicious handle"}
+                else:
+                    checked.append(flag)
+            kept = checked
 
         # Drop any percentage that does not match the arithmetic over the
         # samples - a precise-looking number that cannot be reproduced is an
@@ -248,7 +273,10 @@ def _apply_flag_grounding(result: Dict[str, Any], avail: Dict[str, Any],
 _DATA_GAP_RE = re.compile(
     r"\bunknown\b|\bnot\s+(?:available|exposed|collected|provided|reported)\b"
     r"|\bcannot\s+(?:verify|assess|calculate|determine|confirm)\b"
-    r"|\blimited\s+sample\b|\binsufficient\s+(?:data|sample)\b|\bsample\s+size\b",
+    r"|\blimited\s+sample\b|\binsufficient\s+(?:data|sample)\b|\bsample\s+size\b"
+    # A provider that omits the verified badge is the provider's limit, not a
+    # finding about the account.
+    r"|\bverification\s+gap\b|\bdata\s+collection\s+limitation\b|\bprovider\s+(?:gap|limitation)\b",
     re.IGNORECASE,
 )
 

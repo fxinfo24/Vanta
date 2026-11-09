@@ -912,3 +912,33 @@ def test_engagement_and_cadence_share_one_implementation():
         {"engagement_items": 4, "reactions": 40, "comments": 10, "shares": 2},
         {"followers_count": 2061},
     ) == 0.631
+
+
+def test_numeric_platform_id_is_not_an_authenticity_flag():
+    """A provider id is how the account is identified, not a finding about it."""
+    from app.core.openrouter_client import _apply_flag_grounding, _content_availability
+
+    profile = {"username": "100000537579893", "display_name": "Arif Aziz", "follower_count": 2061}
+    avail = _content_availability([{"text": "a real post " * 5, "reactionCount": 4}], profile)
+    result = {"red_flags": [
+        "Numeric handle (@100000537579893) rather than vanity URL",
+        "Posting pattern is irregular",
+    ], "green_flags": []}
+
+    out = _apply_flag_grounding(result, avail, profile)
+
+    assert out["red_flags"] == ["Posting pattern is irregular"]
+    assert out["filtered_indicators"] == ["Numeric handle (@100000537579893) rather than vanity URL"]
+    assert any("numeric platform id" in i for i in out["limitations"])
+
+
+def test_verification_gap_is_a_data_gap_not_a_red_flag():
+    """The provider omitting the badge says nothing about the account."""
+    from app.core.openrouter_client import _split_indicators
+
+    evidence, gaps = _split_indicators([
+        "Verified flag is False - may indicate platform verification gap",
+        "Account was created recently",
+    ])
+    assert evidence == ["Account was created recently"]
+    assert len(gaps) == 1
