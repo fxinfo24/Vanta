@@ -956,3 +956,14 @@ def test_balance_recorded_with_another_key_does_not_block(app, monkeypatch):
         assert read_credits()["stale_key"] is False
         monkeypatch.setenv("SCRAPECREATORS_API_KEY", "key-two")
         assert read_credits()["stale_key"] is True
+
+
+def test_balance_without_fingerprint_cannot_apply_to_current_key(app, monkeypatch):
+    """A pre-existing balance of unknown provenance must not block a run."""
+    from app.core.scrape_client import read_credits
+    from app.web.models.dossier import record_provider_credits
+
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", "key-one")
+    with app.app_context():
+        assert record_provider_credits("scrapecreators", 0)
+        assert read_credits()["stale_key"] is True

@@ -106,9 +106,11 @@ def read_credits(path: Optional[str] = None) -> Optional[Dict[str, Any]]:
             stored = read_provider_credits("scrapecreators")
             if stored and stored.get("credits_remaining") is not None:
                 current = _key_fingerprint()
+                # A balance with no fingerprint predates this check: its
+                # provenance is unknown, so it cannot be attributed to the key
+                # in use now.
                 stored["stale_key"] = bool(
-                    stored.get("key_fingerprint") and current
-                    and stored["key_fingerprint"] != current
+                    current and stored.get("key_fingerprint") != current
                 )
                 return stored
     except Exception as exc:
