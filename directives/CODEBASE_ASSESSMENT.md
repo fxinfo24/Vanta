@@ -85,7 +85,15 @@ the kind of risk a disclaimer cannot fix.
 * **Nothing is recorded.** No DPIA, no Art. 30 record of processing, no EU representative, no documented purpose per run. The system currently cannot answer "why was this person profiled and who asked for it" beyond the owning account.
 * **The datasets are already inferred.** Snapshots, insights and PDF exports now carry these inferences indefinitely (see 5.4).
 
-### 5.3 Gating (proposed tiers, none implemented yet)
+### 5.3 Gating (tier T0 implemented, the rest not)
+
+**Implemented:** `privacy.allow_special_category_inference` defaults to `false`
+(`config/config.json`, overridable by `ALLOW_SPECIAL_CATEGORY_INFERENCE`). While
+closed, the belief engine is never invoked, relationship and substance fields are
+omitted from the behavioral schema, any volunteered value is replaced with a
+`not_collected` notice, and the UI states why the section is empty. This is the
+T0 posture only: there is still no per-run justification, reviewer, consent
+capture, region rule or DPIA, so T1 and T2 are unbuilt.
 
 * **T0 - operator and opted-in subjects.** Special-category sections off by default behind a config flag (`ALLOW_SPECIAL_CATEGORY_INFERENCE`, default false in `config/config.json`); the factual layer (cadence, engagement arithmetic, content themes, authenticity signals) stays on. Analysis of the operator's own accounts, or of accounts that opt in, is the only use that needs no legal theory.
 * **T1 - public interest / journalistic.** Public figures only; each run records a justification and a reviewer; inferences are not published verbatim; a right-of-reply step before anything ships.

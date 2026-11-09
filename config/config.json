@@ -11,6 +11,14 @@
         "cache_results": true,
         "cache_duration": 3600
     },
+    "privacy": {
+        "allow_special_category_inference": false,
+        "retention": {
+            "raw_content_days": 30,
+            "quote_receipt_days": 90,
+            "snapshot_days": 365
+        }
+    },
     "output": {
         "save_raw_data": true,
         "export_format": "json",

@@ -737,3 +737,38 @@ def test_delete_task_refuses_a_run_in_flight(client, app):
     response = client.delete(f"/api/tasks/{task_id}")
 
     assert response.status_code == 409
+
+
+def test_retention_purge_keeps_history_and_drops_posts(app):
+    """Expired posts and quotes go; snapshot numbers stay."""
+    from datetime import datetime, timedelta
+    from app.web.models import db, DossierSnapshot
+    from app.web.models.dossier import purge_expired_results
+
+    now = datetime.utcnow()
+    with app.app_context():
+        task = Task(platform="facebook", profile_id="old_subject", user_id=app.config["TEST_USER_ID"])
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = now - timedelta(days=120)
+        task.updated_at = task.completed_at
+        task.result_data = {
+            "raw_dossier": {"content": [{"text": "raw post text"}]},
+            "profile_info": {"followers": 42, "bio": "personal bio"},
+            "content_analysis": {"evidence": [{"claim": "c", "quote": "raw post text"}]},
+        }
+        db.session.add(task)
+        db.session.commit()
+        db.session.add(DossierSnapshot(task_id=task.id, platform="facebook",
+                                       username="old_subject",
+                                       analysis_data={"followers": 42}))
+        db.session.commit()
+
+        counts = purge_expired_results(db.session, now=now, raw_days=30, quote_days=90)
+
+        stored = db.session.get(Task, task.id)
+        assert counts == {"raw_purged": 1, "quotes_purged": 1}
+        assert "raw_dossier" not in stored.result_data
+        assert "bio" not in stored.result_data["profile_info"]
+        assert stored.result_data["profile_info"]["followers"] == 42
+        assert stored.result_data["content_analysis"]["evidence"] == []
+        assert DossierSnapshot.query.filter_by(task_id=task.id).count() == 1

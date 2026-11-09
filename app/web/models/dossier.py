@@ -3,7 +3,7 @@ Dossier Models
 Stores deep intelligence snapshots and cross-platform identity links.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from . import db
 import json
 
@@ -277,3 +277,106 @@ class CrossPlatformProfile(db.Model):
             "total_followers": self.total_followers,
             "last_updated": self.last_updated.isoformat()
         }
+
+
+# ---------------------------------------------------------------------------
+# Retention
+# ---------------------------------------------------------------------------
+# Raw posts are the most sensitive thing this app stores (they are somebody
+# else's words) and the least useful over time; the snapshot rows hold numbers,
+# so trend history survives their deletion. These helpers are pure functions of
+# a session so both the Celery beat job and tests can call them.
+
+def purge_expired_results(session, now: datetime = None, raw_days: int = 30,
+                          quote_days: int = 90) -> dict:
+    """Delete collected posts and verbatim quotes past their retention windows.
+
+    ``raw_days``  - age after which the raw dossier (posts, bio, transcripts) goes
+    ``quote_days`` - age after which quoted evidence inside analyses goes
+
+    Snapshot rows are never touched: they are aggregate numbers, which is what
+    keeps "followers changed by +40 since March" answerable after the posts are
+    gone. Returns counts of tasks changed, not rows deleted.
+    """
+    import copy
+    from . import Task, TaskStatus
+
+    now = now or datetime.utcnow()
+    raw_cutoff = now - timedelta(days=raw_days)
+    quote_cutoff = now - timedelta(days=quote_days)
+
+    raw_purged = quotes_purged = 0
+    tasks = Task.query.filter(Task.status.in_([TaskStatus.COMPLETED, TaskStatus.FAILED])).all()
+
+    for task in tasks:
+        result = task.result_data
+        if not isinstance(result, dict) or not result:
+            continue
+        stamped = task.completed_at or task.updated_at or task.created_at
+        if stamped is None:
+            continue
+
+        new = None
+        if stamped <= raw_cutoff and (result.get("raw_dossier") or result.get("raw_data")):
+            new = copy.deepcopy(result)
+            new.pop("raw_dossier", None)
+            new.pop("raw_data", None)
+            profile = new.get("profile_info")
+            if isinstance(profile, dict):
+                # The bio is quoted text, not a metric.
+                for key in ("bio", "description"):
+                    profile.pop(key, None)
+            new["retention"] = {**(new.get("retention") or {}),
+                                "raw_content_removed_at": now.isoformat()}
+            raw_purged += 1
+
+        if stamped <= quote_cutoff:
+            target = new if new is not None else copy.deepcopy(result)
+            removed = _strip_quotes(target)
+            if removed:
+                target["retention"] = {**(target.get("retention") or {}),
+                                       "quotes_removed_at": now.isoformat(),
+                                       "quotes_removed": removed}
+                new = target
+                quotes_purged += 1
+
+        if new is not None:
+            task.result_data = new
+            session.add(task)
+
+    if raw_purged or quotes_purged:
+        session.commit()
+    return {"raw_purged": raw_purged, "quotes_purged": quotes_purged}
+
+
+def _strip_quotes(payload: dict) -> int:
+    """Remove verbatim quote lists from an analysis, keeping the counts."""
+    removed = 0
+
+    def strip_evidence(container, key="evidence"):
+        nonlocal removed
+        if not isinstance(container, dict):
+            return
+        evidence = container.get(key)
+        if isinstance(evidence, list) and evidence:
+            removed += len(evidence)
+            container[key] = []
+            container["evidence_removed_by_retention"] = True
+        elif isinstance(evidence, dict):
+            total = sum(len(v) for v in evidence.values() if isinstance(v, list))
+            if total:
+                removed += total
+                container[key] = {}
+                container["evidence_removed_by_retention"] = True
+
+    for section in ("content_analysis", "consumer_profile", "behavioral_profile",
+                    "authenticity", "belief_system"):
+        strip_evidence(payload.get(section))
+    strip_evidence(payload)
+
+    calibration = ((payload.get("belief_system") or {}).get("EVIDENCE_AND_CALIBRATION")
+                   or (payload.get("belief_system") or {}).get("EVIDENCE AND CALIBRATION"))
+    if isinstance(calibration, dict):
+        strip_evidence(calibration)
+
+    return removed

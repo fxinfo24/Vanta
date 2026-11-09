@@ -226,3 +226,95 @@ def test_section_receipts_must_be_verbatim_from_collected_posts():
     assert [e["claim"] for e in out["evidence"]] == ["temperament=Angry"]
     assert out["evidence_rejected"] == 1
     assert any("lifestyle" in lim for lim in out["limitations"])
+
+
+def test_benchmark_csv_import_requires_citation(tmp_path):
+    """An imported bot label without a resolvable source is rejected, not scored."""
+    from app.core.authenticity import load_benchmark_csv
+
+    csv_path = tmp_path / "labels.csv"
+    csv_path.write_text(
+        "platform,profile_id,is_inauthentic,source_ref,label_reason\n"
+        "twitter,human1,FALSE,,known journalist\n"
+        "twitter,bot1,TRUE,twibot-20,automation disclosed\n"
+        "twitter,bot2,TRUE,,spam\n"
+        "twitter,bot3,TRUE,no-such-source,spam\n"
+        "twitter,bot4,MAYBE,twibot-20,unclear\n",
+        encoding="utf-8",
+    )
+
+    result = load_benchmark_csv(csv_path, sources=[{"id": "twibot-20"}])
+
+    assert [a["profile_id"] for a in result["accounts"]] == ["human1", "bot1"]
+    assert len(result["rejected"]) == 3
+
+
+def test_benchmark_csv_import_names_missing_columns(tmp_path):
+    """A file missing the citation columns must fail loudly."""
+    from app.core.authenticity import load_benchmark_csv
+
+    csv_path = tmp_path / "labels.csv"
+    csv_path.write_text("platform,profile_id\nfacebook,abc\n", encoding="utf-8")
+
+    try:
+        load_benchmark_csv(csv_path)
+    except ValueError as exc:
+        assert "source_ref" in str(exc)
+    else:
+        raise AssertionError("missing columns should raise")
+
+
+def test_special_category_sections_are_off_by_default(monkeypatch):
+    """Belief/relationship/substance inference must not run unless opted in."""
+    monkeypatch.delenv("ALLOW_SPECIAL_CATEGORY_INFERENCE", raising=False)
+    monkeypatch.setattr("app.utils.config.load_config", lambda: {"privacy": {}})
+
+    from app.core.behavioral_analyzer import BehavioralAnalyzer
+    from app.utils.config import allows_special_category_inference
+
+    assert allows_special_category_inference() is False
+
+    class VoluntarilyDetailed:
+        prompt = ""
+
+        def analyze(self, prompt, system_prompt=None, model_type=None):
+            VoluntarilyDetailed.prompt = prompt
+            return {"temperament": {"label": "Calm"},
+                    "relationships": {"attachment_style": "Avoidant"},
+                    "lifestyle_risks": {"drug_alcohol_indicated": True},
+                    "evidence": []}
+
+    out = BehavioralAnalyzer(VoluntarilyDetailed()).analyze_behavior({
+        "username": "x", "platform": "facebook", "profile": {"username": "x"},
+        "content": [{"text": "a normal post about the weather"}],
+    })
+
+    assert "lifestyle_risks" not in VoluntarilyDetailed.prompt
+    assert out["relationships"]["status"] == "not_collected"
+    assert out["lifestyle_risks"]["status"] == "not_collected"
+    assert "Avoidant" not in str(out["relationships"])
+
+
+def test_special_category_sections_requested_when_enabled(monkeypatch):
+    """Opting in restores the sections instead of leaving a permanent hole."""
+    monkeypatch.setenv("ALLOW_SPECIAL_CATEGORY_INFERENCE", "true")
+
+    from app.core.behavioral_analyzer import BehavioralAnalyzer
+    from app.utils.config import allows_special_category_inference
+
+    assert allows_special_category_inference() is True
+
+    class Capturing:
+        prompt = ""
+
+        def analyze(self, prompt, system_prompt=None, model_type=None):
+            Capturing.prompt = prompt
+            return {"relationships": {"attachment_style": "Secure"}}
+
+    out = BehavioralAnalyzer(Capturing()).analyze_behavior({
+        "username": "x", "platform": "facebook", "profile": {"username": "x"},
+        "content": [{"text": "a normal post about the weather"}],
+    })
+
+    assert '"lifestyle_risks"' in Capturing.prompt
+    assert out["relationships"]["attachment_style"] == "Secure"

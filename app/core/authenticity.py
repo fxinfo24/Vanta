@@ -562,6 +562,67 @@ class ProfileAuthenticityAnalyzer:
 BENCHMARK_MIN_SAMPLE = 20
 
 
+# Columns an imported label file must provide. Anything else is ignored, so an
+# export can be dropped in unchanged from the cited dataset.
+BENCHMARK_CSV_COLUMNS = ("platform", "profile_id", "is_inauthentic", "source_ref", "label_reason")
+_TRUE = {"1", "true", "yes", "y", "inauthentic", "bot", "fake"}
+_FALSE = {"0", "false", "no", "n", "authentic", "human", "real"}
+
+
+def load_benchmark_csv(path, sources=None):
+    """Read labelled accounts from a CSV and enforce the citation rules.
+
+    Expected header: platform, profile_id, is_inauthentic, source_ref,
+    label_reason (+ optional expected_name/notes). Rows are validated with
+    :func:`validate_benchmark_labels`, so an uncited "inauthentic" row is
+    rejected rather than quietly becoming ground truth.
+
+    Returns ``{accounts, rejected, columns}``. A missing column is an error, not
+    an empty dataset: silently scoring zero rows would look like a clean bill.
+    """
+    import csv
+
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        header = [c.strip() for c in (reader.fieldnames or [])]
+        missing = [c for c in BENCHMARK_CSV_COLUMNS if c not in header]
+        if missing:
+            raise ValueError(f"Label CSV is missing required column(s): {', '.join(missing)}")
+
+        accounts, rejected = [], []
+        for line_no, raw in enumerate(reader, start=2):
+            row = {(k or "").strip(): (v or "").strip() for k, v in raw.items()}
+            if not row.get("profile_id"):
+                rejected.append({"line": line_no, "reason": "empty profile_id"})
+                continue
+            flag = row.get("is_inauthentic", "").lower()
+            if flag in _TRUE:
+                inauthentic = True
+            elif flag in _FALSE:
+                inauthentic = False
+            else:
+                rejected.append({"line": line_no, "profile_id": row["profile_id"],
+                                 "reason": f"unreadable is_inauthentic value '{row.get('is_inauthentic')}'"})
+                continue
+            accounts.append({
+                "platform": row.get("platform") or "",
+                "profile_id": row["profile_id"],
+                "expected_name": row.get("expected_name") or None,
+                "is_inauthentic": inauthentic,
+                "label_source": row.get("label_source") or "imported-dataset",
+                "source_ref": row.get("source_ref") or None,
+                "label_reason": row.get("label_reason") or None,
+                "notes": row.get("notes") or None,
+            })
+
+    checked = validate_benchmark_labels(accounts, sources)
+    return {
+        "accounts": checked["usable"],
+        "rejected": rejected + checked["rejected"],
+        "columns": header,
+    }
+
+
 def validate_benchmark_labels(accounts, sources=None):
     """Split labels into usable and unusable, citing why each was excluded.
 

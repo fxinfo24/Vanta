@@ -308,7 +308,14 @@ const HistoryPanel = ({ results }: { results: AnalysisResult }) => {
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
               data={history.snapshots.map((s: any, i: number) => ({
-                run: `#${i + 1}`,
+                // A date is what the reader needs (all backfilled runs share
+                // today's date, so fall back to the run index when it repeats).
+                run: s.collected_at
+                  ? new Date(s.collected_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                    + (i > 0 && String(s.collected_at).slice(0, 10)
+                        === String(history.snapshots[i - 1]?.collected_at).slice(0, 10)
+                        ? ` #${i + 1}` : '')
+                  : `#${i + 1}`,
                 engagement: s.engagement_rate_percent ?? null,
                 bot: typeof s.bot_likelihood === 'number' ? Math.round(s.bot_likelihood * 100) : null,
               }))}
@@ -512,6 +519,25 @@ const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefDa
     ([, quotes]: [string, any]) => Array.isArray(quotes) && quotes.length > 0
   ) as [string, string[]][];
   const quoteTotal = evidenceAxes.reduce((n, [, quotes]) => n + quotes.length, 0);
+
+  // Policy-gated sections: the backend did not run the inference at all, so
+  // there is nothing to display and no "low confidence" reading to fake.
+  if (results.belief_system?.gated) {
+    return (
+      <div className="glass-card p-6 rounded-2xl">
+        <h3 className="text-xl font-bold text-white mb-2">Belief system — not collected</h3>
+        <p className="text-sm text-white/60 leading-relaxed">
+          {results.belief_system.reason ||
+            'Political, religious and social-belief inference is disabled by policy.'}
+        </p>
+        <p className="text-xs text-white/40 mt-3">
+          These are special-category attributes (political opinions, religion) inferred about someone
+          who did not consent to being analysed, so Vanta does not produce them by default.
+        </p>
+      </div>
+    );
+  }
+
   return (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div className="glass-card p-6 rounded-2xl">
@@ -739,6 +765,7 @@ const LifestyleTab = ({ results }: { results: AnalysisResult }) => {
   const interests = behavior.interests || {};
   const pro = behavior.professional || {};
   const rel = behavior.relationships || {};
+  const risks = behavior.lifestyle_risks || {};
   const temp = behavior.temperament || {};
 
   return (
@@ -760,6 +787,12 @@ const LifestyleTab = ({ results }: { results: AnalysisResult }) => {
         <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
           <HeartIcon className="w-5 h-5 text-pink-400" /> Relationships
         </h3>
+        {rel.gated ? (
+          <div className="text-sm text-white/50 leading-relaxed">
+            <div className="text-amber-200/80 text-xs uppercase tracking-wide mb-1">Not collected</div>
+            {rel.reason}
+          </div>
+        ) : (
         <div className="space-y-4">
           <div>
             <div className="text-xs text-white/40 uppercase">Attachment Style</div>
@@ -771,9 +804,12 @@ const LifestyleTab = ({ results }: { results: AnalysisResult }) => {
           </div>
           <div>
             <div className="text-xs text-white/40 uppercase">Dynamic</div>
-            <div className="text-sm text-white/80">{rel.sectual_habit_or_dynamic || 'N/A'}</div>
+            <div className="text-sm text-white/80">
+              {rel.relationship_dynamic || rel.sectual_habit_or_dynamic || 'N/A'}
+            </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* Professional & Skills */}
@@ -842,13 +878,24 @@ const LifestyleTab = ({ results }: { results: AnalysisResult }) => {
           </div>
           <div>
             <div className="text-xs text-red-300/60 uppercase mb-1">Lifestyle Risk Indicators</div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-white">Substances Indicated:</span>
-              <span className={behavior.lifestyle_risks?.drug_alcohol_indicated ? "text-red-400 font-bold" : "text-emerald-400"}>
-                {behavior.lifestyle_risks?.drug_alcohol_indicated ? "YES" : "NO"}
-              </span>
-            </div>
-            <p className="text-white/60 text-sm">{behavior.lifestyle_risks?.risk_conslusion}</p>
+            {risks.gated ? (
+              <>
+                <div className="text-amber-200/80 text-xs uppercase tracking-wide mb-1">Not collected</div>
+                <p className="text-white/50 text-sm leading-relaxed">{risks.reason}</p>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-white">Substances Indicated:</span>
+                  <span className={risks.drug_alcohol_indicated ? "text-red-400 font-bold" : "text-emerald-400"}>
+                    {risks.drug_alcohol_indicated ? "YES" : "NO"}
+                  </span>
+                </div>
+                <p className="text-white/60 text-sm">
+                  {risks.risk_conclusion || risks.risk_conslusion}
+                </p>
+              </>
+            )}
           </div>
         </div>
       </div>

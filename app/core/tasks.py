@@ -37,6 +37,8 @@ from celery import Celery
 
 from app.core.analyzer import SocialMediaAnalyzer
 from app.web.app import create_app
+from celery.schedules import crontab
+
 from app.web.models import db, Task, TaskStatus
 
 # Celery application
@@ -59,8 +61,35 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_routes={
         "app.core.tasks.run_task_analysis": {"queue": "analysis"},
+        "app.core.tasks.purge_expired_data": {"queue": "data"},
+    },
+    # Retention has to run without anyone remembering to run it. Daily is enough
+    # for windows measured in tens of days.
+    beat_schedule={
+        "purge-expired-data": {
+            "task": "app.core.tasks.purge_expired_data",
+            "schedule": crontab(hour=3, minute=17),
+        },
     },
 )
+
+
+@celery_app.task(name="app.core.tasks.purge_expired_data")
+def purge_expired_data() -> Dict[str, int]:
+    """Delete posts and quote receipts past their configured retention window."""
+    from app.utils.config import retention_days
+    from app.web.models.dossier import purge_expired_results
+
+    flask_app = create_app()
+    with flask_app.app_context():
+        windows = retention_days()
+        result = purge_expired_results(
+            db.session,
+            raw_days=windows["raw_content_days"],
+            quote_days=windows["quote_receipt_days"],
+        )
+        logger.info(f"Retention purge: {result} (windows={windows})")
+        return result
 
 
 def _save_results_to_file(flask_app, task_id: int, result: Dict[str, Any]) -> str:

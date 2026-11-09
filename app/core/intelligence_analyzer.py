@@ -12,9 +12,9 @@ from .platform_prompts import get_platform_context, verify_claim_evidence
 
 # Specialized Analyzers
 from .belief_analyzer import BeliefSystemAnalyzer
-from .belief_analyzer import BeliefSystemAnalyzer
 from .consumer_intelligence import ConsumerIntelligenceAnalyzer
 from .behavioral_analyzer import BehavioralAnalyzer
+from ..utils.config import allows_special_category_inference
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +86,23 @@ class IntelligenceAnalyzer:
             report["core_intelligence"]["error"] = str(e)
 
         # 2. BELIEF SYSTEM ANALYSIS (New Module)
-        try:
-            report["belief_system"] = self.belief_engine.analyze_belief_system(dossier_data)
-        except Exception as e:
-            logger.error(f"Belief system failure: {e}")
-            report["belief_system"]["error"] = str(e)
+        # Political and religious opinions are Art. 9 data inferred about someone
+        # who did not consent, so the whole engine is policy-gated and off by
+        # default. The call is skipped, not filtered afterwards: the inference
+        # must not happen at all.
+        if allows_special_category_inference():
+            try:
+                report["belief_system"] = self.belief_engine.analyze_belief_system(dossier_data)
+            except Exception as e:
+                logger.error(f"Belief system failure: {e}")
+                report["belief_system"]["error"] = str(e)
+        else:
+            report["belief_system"] = {
+                "gated": True,
+                "status": "not_collected",
+                "reason": "Political, religious and social-belief inference is disabled by policy "
+                          "(privacy.allow_special_category_inference). No inference was run.",
+            }
             
         # 3. CONSUMER INTELLIGENCE (New Module)
         try:

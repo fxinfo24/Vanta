@@ -190,8 +190,14 @@ def get_config_path() -> Path:
             f"Config file specified in PROFILESCOPE_CONFIG not found: {env_path}"
         )
 
-    # Check common locations
+    # Check common locations. config/config.json is the documented location, so
+    # it is looked up both relative to the cwd and to the project root: without
+    # those entries the file was never read and every "config" default silently
+    # came from this module instead.
+    project_root = Path(__file__).resolve().parents[2]
     common_locations = [
+        Path("config/config.json"),
+        project_root / "config" / "config.json",
         Path("config.json"),  # Current directory
         Path("../config.json"),  # Parent directory
         Path.home() / ".vanta/config.json",  # User home directory
@@ -203,6 +209,51 @@ def get_config_path() -> Path:
             return path
 
     return Path("config.json")  # Default to current directory
+
+
+SPECIAL_CATEGORY_ENV = "ALLOW_SPECIAL_CATEGORY_INFERENCE"
+
+
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def allows_special_category_inference() -> bool:
+    """Whether this deployment may infer Art. 9 categories about a subject.
+
+    Political opinions, intimate-relationship patterns and substance use are
+    inferred about people who never agreed to be analysed, so the default is
+    **off** and has to be switched on deliberately - env var first, then
+    config.json. Anything other than an explicit yes stays closed.
+    """
+    env = os.getenv(SPECIAL_CATEGORY_ENV)
+    if env is not None and str(env).strip():
+        return _truthy(env)
+    try:
+        cfg = load_config()
+    except Exception as e:  # unreadable config must fail closed, not open
+        logger.warning(f"Could not read privacy config ({e}); special-category inference stays disabled")
+        return False
+    return _truthy((cfg.get("privacy") or {}).get("allow_special_category_inference", False))
+
+
+def retention_days() -> Dict[str, int]:
+    """Retention windows for stored analysis data, in days."""
+    defaults = {"raw_content_days": 30, "quote_receipt_days": 90, "snapshot_days": 365}
+    try:
+        cfg = load_config()
+    except Exception as e:
+        logger.warning(f"Could not read retention config ({e}); using defaults")
+        return defaults
+    configured = (cfg.get("privacy") or {}).get("retention") or {}
+    out = {}
+    for key, default in defaults.items():
+        try:
+            value = int(os.getenv(key.upper(), configured.get(key, default)))
+        except (TypeError, ValueError):
+            value = default
+        out[key] = max(value, 1)
+    return out
 
 
 def load_config() -> Dict[str, Any]:

@@ -4,8 +4,66 @@ from typing import Dict, Any, List
 import json
 
 from .openrouter_client import OpenRouterClient
+from ..utils.config import allows_special_category_inference
 
 logger = logging.getLogger(__name__)
+
+# Sections that infer Art. 9 categories: intimate relationships (sex life),
+# substance use (health). They are requested only when the deployment has
+# explicitly enabled special-category inference.
+GATED_SECTIONS = ("relationships", "lifestyle_risks")
+
+
+_SCHEMA_TEMPLATE = """{
+    "temperament": {
+        "label": "Angry" | "Calm" | "Energetic" | "Melancholic" | "Variable",
+        "score": 0.0 to 1.0 (intensity),
+        "description": "Brief explanation of their emotional baseline."
+    },
+    "interests": {
+        "hobbies": ["list", "of", "detected", "hobbies"],
+        "favorites": {
+            "thing": "inferred favorite object/topic",
+            "person": "inferred favorite person/idol"
+        },
+        "reading_habit": "Heavy" | "Moderate" | "Light" | "None" | "Unknown",
+        "reading_interests": ["genres", "topics"]
+    },
+    "professional": {
+        "is_tech_expert": true,
+        "tech_skill_level": "Novice" | "Competent" | "Expert",
+        "earning_source": "Inferred primary income source (e.g. 'Corporate Job', 'Freelance', 'Influencer')",
+        "personal_skills": ["skill1", "skill2"],
+        "spending_pattern": "Frugal" | "Lavish" | "Strategic" | "Impulsive"
+    },
+{GATED}    "psychological_resilience": {
+        "resist_status": "Resistant" | "Compliant",
+        "resist_description": "Do they resist authority/norms or comply? Are they resilient to stress?"
+    },
+    "evidence": [
+        {"claim": "temperament=Angry", "quote": "EXACT text copied from CONTENT SAMPLES above"}
+    ]
+}"""
+
+_GATED_SCHEMA = """    "relationships": {
+        "pattern": "Description of how they relate to others (e.g., 'Confrontational', 'Supportive', 'Parasocial')",
+        "attachment_style": "Secure" | "Anxious" | "Avoidant" | "Disorganized",
+        "relationship_dynamic": "Inferred relationship status/dynamic (e.g., 'Single', 'Partnered') - KEEP SAFE AND NON-EXPLICIT."
+    },
+    "lifestyle_risks": {
+        "drug_alcohol_indicated": false,
+        "risk_conclusion": "Assessment of substance related risk based on public posts."
+    },
+"""
+
+
+def _gated_notice(section: str) -> Dict[str, Any]:
+    return {
+        "gated": True,
+        "status": "not_collected",
+        "reason": f"'{section}' infers a special-category attribute and is disabled by policy "
+                  f"(privacy.allow_special_category_inference). Nothing was collected, so nothing is shown.",
+    }
 
 class BehavioralAnalyzer:
     """
@@ -51,6 +109,7 @@ class BehavioralAnalyzer:
                 text_samples.append(f"TRANSCRIPT_SNIPPET: {text[:500]}")
                 
         context_str = "\n".join(text_samples)
+        allow_special = allows_special_category_inference()
         
         system_prompt = """
         You are an expert Behavioral Profiler and Psychologist. 
@@ -60,14 +119,22 @@ class BehavioralAnalyzer:
         1. Emotional Temperament (Angry vs Calm, volatile vs stable)
         2. Personal Favorites (Things, People, Hobbies)
         3. Intellectual Habits (Reading, Learning, Tech Expertise)
-        4. Lifestyle & Risks (Substance use, Party habits - look for visual/textual cues)
-        5. Relationship Dynamics (Attachment style, human relationship patterns)
-        6. Professional Capabilities (Skills, Earning Source, Tech Expert status)
-        7. Resilience (Compliance vs Resistance, 'Resist or Not')
-        
-        Output MUST be valid JSON.
+        4. Professional Capabilities (Skills, Earning Source, Tech Expert status)
+        5. Resilience (Compliance vs Resistance, 'Resist or Not')
         """
-        
+        if allow_special:
+            system_prompt += """        6. Lifestyle & Risks (Substance use, Party habits - look for visual/textual cues)
+        7. Relationship Dynamics (Attachment style, human relationship patterns)
+"""
+        system_prompt += "        \n        Output MUST be valid JSON.\n        """
+
+        schema = _SCHEMA_TEMPLATE.replace(
+            "{GATED}", _GATED_SCHEMA if allow_special else ""
+        )
+        gated_note = ("" if allow_special else
+                      "\n        Do NOT infer substance use, health conditions or intimate-relationship "
+                      "patterns: those sections are disabled by policy and must be omitted.\n")
+
         prompt = f"""
         Analyze this subject based on their digital footprint:
         
@@ -82,47 +149,8 @@ class BehavioralAnalyzer:
         ---------------------------------------------------------
         
         Return a JSON object with this EXACT structure:
-        {{
-            "temperament": {{
-                "label": "Angry" | "Calm" | "Energetic" | "Melancholic" | "Variable",
-                "score": 0.0 to 1.0 (intensity),
-                "description": "Brief explanation of their emotional baseline."
-            }},
-            "interests": {{
-                "hobbies": ["list", "of", "detected", "hobbies"],
-                "favorites": {{
-                    "thing": "inferred favorite object/topic",
-                    "person": "inferred favorite person/idol"
-                }},
-                "reading_habit": "Heavy" | "Moderate" | "Light" | "None" | "Unknown",
-                "reading_interests": ["genres", "topics"]
-            }},
-            "professional": {{
-                "is_tech_expert": true/false,
-                "tech_skill_level": "Novice" | "Competent" | "Expert",
-                "earning_source": "Inferred primary income source (e.g. 'Corporate Job', 'Freelance', 'Influencer')",
-                "personal_skills": ["skill1", "skill2"],
-                "spending_pattern": "Frugal" | "Lavish" | "Strategic" | "Impulsive"
-            }},
-            "relationships": {{
-                "pattern": "Description of how they relate to others (e.g., 'Confrontational', 'Supportive', 'Parasocial')",
-                "attachment_style": "Secure" | "Anxious" | "Avoidant" | "Disorganized",
-                "sectual_habit_or_dynamic": "Inferred relationship dynamic (e.g., 'Single', 'Partnered', 'Promiscuous', 'Conservative') - KEEP SAFE AND NON-EXPLICIT."
-            }},
-            "lifestyle_risks": {{
-                "drug_alcohol_indicated": true/false,
-                "risk_conslusion": "Assessment of substance related risk based on public posts."
-            }},
-            "psychological_resilience": {{
-                "resist_status": "Resistant" | "Compliant",
-                "resist_description": "Do they resist authority/norms or comply? Are they resilient to stress?"
-            }},
-            "evidence": [
-                {{"claim": "temperament=Angry", "quote": "EXACT text copied from CONTENT SAMPLES above"}},
-                {{"claim": "lifestyle_risks.drug_alcohol_indicated=false", "quote": "EXACT text ..."}}
-            ]
-        }}
-
+        {schema}
+{gated_note}
         EVIDENCE RULES: every section above must have at least one entry in `evidence`.
         Each `quote` must be copied character-for-character from CONTENT SAMPLES - no
         paraphrase, no translation, no stitching of two posts. A receipt that cannot be
@@ -130,4 +158,16 @@ class BehavioralAnalyzer:
         unsupported rather than as a finding.
         """
         
-        return self.client.analyze(prompt, system_prompt, model_type="psych")
+        result = self.client.analyze(prompt, system_prompt, model_type="psych")
+        if isinstance(result, dict) and not allow_special:
+            # A model that volunteers a gated attribute anyway does not get to keep it.
+            for section in GATED_SECTIONS:
+                result.pop(section, None)
+                result[section] = _gated_notice(section)
+            result.setdefault("limitations", [])
+            if isinstance(result["limitations"], list):
+                result["limitations"].append(
+                    "Special-category sections (intimate relationships, substance use) are "
+                    "disabled by policy and were not inferred."
+                )
+        return result
