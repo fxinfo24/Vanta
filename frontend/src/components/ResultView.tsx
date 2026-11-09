@@ -128,8 +128,15 @@ const ResultView: React.FC = () => {
               </span>
             </div>
             <h1 className="text-3xl md:text-4xl font-bold text-white font-display mb-2 break-all">
-              @{results.profile_info?.username}
+              {results.profile_info?.display_name || `@${results.profile_info?.username}`}
             </h1>
+            {results.profile_info?.username && (
+              <div className="text-sm text-white/40 mb-2 break-all">
+                {/^\d{6,}$/.test(String(results.profile_info.username))
+                  ? `Platform id ${results.profile_info.username}`
+                  : `@${results.profile_info.username}`}
+              </div>
+            )}
             <p className="text-base md:text-lg text-white/60 max-w-2xl">
               {results.executive_summary || results.profile_info?.bio || "No summary available."}
             </p>

@@ -693,8 +693,10 @@ Return comprehensive, platform-specific insights that leverage {ctx['name']}'s u
         avail = _content_availability(content_items, profile_data)
         boundaries = _boundary_text(avail)
 
+        from app.utils.helpers import identity_description
+
         profile_metrics = f"""
-Username: @{profile_data.get('username')}
+{identity_description(profile_data)}
 Account Age: {profile_data.get('created_at', 'Unknown')}
 Followers: {_metric('followers_count')}
 Following: {_metric('following_count')}

@@ -6,6 +6,8 @@ Optimized Grok 4.1 prompts for each platform's unique characteristics
 import re
 from typing import Dict, Any, List, Optional
 
+from app.utils.helpers import identity_description
+
 
 # ---------------------------------------------------------------------------
 # Data availability
@@ -541,7 +543,7 @@ PLATFORM-SPECIFIC AUTHENTICITY SIGNALS:
 {', '.join(ctx['authenticity_signals'])}
 
 PROFILE METRICS:
-Username: @{profile_data.get('username')}
+{identity_description(profile_data)}
 Account Created: {profile_data.get('created_at', 'Unknown')}
 Followers: {(lambda v: f'{v:,}' if v else 'unknown (not exposed by provider)')(profile_data.get('follower_count'))}
 Following: {(lambda v: f'{v:,}' if v else 'unknown (not exposed by provider)')(profile_data.get('following_count'))}

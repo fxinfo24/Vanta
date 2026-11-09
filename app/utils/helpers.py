@@ -159,3 +159,30 @@ def posting_cadence(timestamps) -> dict:
         "posts_per_day": round(per_day, 3),
         "posts_per_week": round(per_day * 7, 2),
     }
+
+
+_NUMERIC_HANDLE_RE = re.compile(r"^\d{6,}$")
+
+
+def identity_description(profile_data: Optional[dict]) -> str:
+    """Render who the account belongs to, separating name from provider id.
+
+    Some platforms return the numeric user id in the `username` field when the
+    account has no vanity handle. Printing that alone invites a model to read
+    "@100000537579893" as a suspicious handle while the real name sits unused,
+    so the name is always shown and a numeric id is labelled as an id.
+    """
+    profile = profile_data or {}
+    name = (profile.get("display_name") or profile.get("name") or "").strip()
+    handle = str(profile.get("username") or "").strip().lstrip("@")
+    lines = [f"Display name: {name or 'not returned by provider'}"]
+    if not handle:
+        lines.append("Handle: not returned by provider")
+    elif _NUMERIC_HANDLE_RE.match(handle):
+        lines.append(
+            f"Handle: @{handle} - this is the platform's numeric user id, not a "
+            "vanity handle. It is an identifier, never evidence about the account."
+        )
+    else:
+        lines.append(f"Handle: @{handle}")
+    return "\n".join(lines)

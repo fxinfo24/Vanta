@@ -5,6 +5,7 @@ import json
 
 from .openrouter_client import OpenRouterClient
 from ..utils.config import allows_special_category_inference
+from ..utils.helpers import identity_description
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +140,7 @@ class BehavioralAnalyzer:
         Analyze this subject based on their digital footprint:
         
         SUBJECT DATA:
-        Username: {profile.get('username')}
-        DisplayName: {profile.get('display_name')}
+        {identity_description(profile)}
         Platform: {dossier_data.get('platform')}
         
         CONTENT SAMPLES:
