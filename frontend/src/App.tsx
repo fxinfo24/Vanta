@@ -108,6 +108,18 @@ const LoginView: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) => {
           </button>
         </form>
 
+        {mode === 'login' && (
+          <p className="text-center text-sm mt-3">
+            <button
+              type="button"
+              onClick={() => navigate('/forgot-password')}
+              className="text-white/50 hover:text-white/80"
+            >
+              Forgot your password?
+            </button>
+          </p>
+        )}
+
         <p className="text-center text-sm text-white/60 mt-5">
           {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
           <button
@@ -119,6 +131,181 @@ const LoginView: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) => {
         </p>
       </div>
     </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Password reset: request a link, then redeem the token from that link.
+// Both screens are public and reuse the login shell.
+// ---------------------------------------------------------------------------
+
+const authCardCls = 'glass-panel rounded-2xl p-8 w-full max-w-md';
+const authInputCls =
+  'w-full rounded-xl bg-black/30 border border-white/10 px-4 py-2.5 text-sm text-white placeholder-white/40 outline-none focus:border-primary-500/60 focus:ring-1 focus:ring-primary-500/40';
+const authButtonCls =
+  'w-full rounded-xl bg-gradient-to-r from-primary-500 to-secondary-500 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-opacity';
+
+const AuthShell: React.FC<{ title: string; subtitle: string; children: React.ReactNode }> = ({ title, subtitle, children }) => (
+  <div className="min-h-screen flex items-center justify-center px-4 font-sans text-white relative overflow-hidden">
+    <div className="fixed top-0 left-0 w-full h-full overflow-hidden -z-10 pointer-events-none">
+      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-primary-500/20 rounded-full blur-[120px] animate-pulse-slow" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-secondary-500/20 rounded-full blur-[120px] animate-pulse-slow" style={{ animationDelay: '1.5s' }} />
+    </div>
+    <div className={authCardCls}>
+      <div className="flex items-center justify-center mb-6">
+        <img src="/logo.png" alt="Vanta" className="h-14 w-14 rounded-full object-cover border border-white/10 shadow-lg" />
+      </div>
+      <h1 className="text-2xl font-bold text-center font-display tracking-tight">{title}</h1>
+      <p className="text-sm text-white/60 text-center mt-1 mb-6">{subtitle}</p>
+      {children}
+    </div>
+  </div>
+);
+
+const ForgotPasswordView: React.FC = () => {
+  const navigate = useNavigate();
+  const [email, setEmail] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setMessage('');
+    setBusy(true);
+    try {
+      const res = await apiService.forgotPassword(email);
+      if (res.success) {
+        setMessage(res.data?.message || 'If that address has an account, a reset link has been sent.');
+      } else {
+        setError(res.error || 'Could not request a reset link');
+      }
+    } catch {
+      setError('Network error — is the backend reachable?');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AuthShell title="Reset your password" subtitle="We'll email you a one-time link">
+      {error && (
+        <div className="mb-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-200 text-sm px-4 py-2.5">
+          {error}
+        </div>
+      )}
+      {message && (
+        <div className="mb-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-sm px-4 py-2.5">
+          {message}
+        </div>
+      )}
+      <form onSubmit={submit} className="space-y-4">
+        <input
+          type="email"
+          required
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className={authInputCls}
+          autoComplete="email"
+        />
+        <button type="submit" disabled={busy} className={authButtonCls}>
+          {busy ? 'Sending…' : 'Send reset link'}
+        </button>
+      </form>
+      <p className="text-center text-sm text-white/60 mt-5">
+        <button onClick={() => navigate('/login')} className="text-primary-300 hover:text-primary-200 font-medium">
+          Back to sign in
+        </button>
+      </p>
+    </AuthShell>
+  );
+};
+
+const ResetPasswordView: React.FC = () => {
+  const navigate = useNavigate();
+  const token = new URLSearchParams(window.location.search).get('token') || '';
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setMessage('');
+    if (password !== confirm) {
+      setError('The two passwords do not match');
+      return;
+    }
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await apiService.resetPassword(token, password);
+      if (res.success) {
+        setMessage(res.data?.message || 'Password updated. You can sign in now.');
+        setTimeout(() => navigate('/login'), 1500);
+      } else {
+        setError(res.error || 'This reset link is invalid or has expired');
+      }
+    } catch {
+      setError('Network error — is the backend reachable?');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AuthShell title="Choose a new password" subtitle="This link can only be used once">
+      {!token && (
+        <div className="mb-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm px-4 py-2.5">
+          This link is missing its token. Request a new reset email.
+        </div>
+      )}
+      {error && (
+        <div className="mb-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-200 text-sm px-4 py-2.5">
+          {error}
+        </div>
+      )}
+      {message && (
+        <div className="mb-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-sm px-4 py-2.5">
+          {message}
+        </div>
+      )}
+      <form onSubmit={submit} className="space-y-4">
+        <input
+          type="password"
+          required
+          placeholder="New password (min 8 characters)"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className={authInputCls}
+          autoComplete="new-password"
+        />
+        <input
+          type="password"
+          required
+          placeholder="Confirm new password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          className={authInputCls}
+          autoComplete="new-password"
+        />
+        <button type="submit" disabled={busy || !token} className={authButtonCls}>
+          {busy ? 'Updating…' : 'Set new password'}
+        </button>
+      </form>
+      <p className="text-center text-sm text-white/60 mt-5">
+        <button onClick={() => navigate('/forgot-password')} className="text-primary-300 hover:text-primary-200 font-medium">
+          Request a new link
+        </button>
+      </p>
+    </AuthShell>
   );
 };
 
@@ -393,6 +580,10 @@ const App: React.FC = () => {
             path="/login"
             element={authed ? <Navigate to="/dashboard" replace /> : <LoginView onSuccess={() => setAuthed(true)} />}
           />
+          {/* Public: reachable while signed out, and while signed in (a user
+              may be resetting after a locked-out session). */}
+          <Route path="/forgot-password" element={<ForgotPasswordView />} />
+          <Route path="/reset-password" element={<ResetPasswordView />} />
           <Route path="/" element={authed ? <Layout /> : <Navigate to="/login" replace />}>
             <Route index element={<Navigate to="dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />

@@ -79,6 +79,14 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   `FRONTEND_URL` is set on Render so page requests to the API host (which serves no compiled UI)
   302 to the Vercel app; `/api/*` still answers normally. `https://profile-scope.vercel.app` is the
   older, duplicate Vercel project (root dir `frontend`, Dec 2025) still serving a stale build.
+- **Password reset (Nov 2026):** `POST /api/auth/forgot-password` mails a one-time link and
+  `POST /api/auth/reset-password` redeems it. Only the SHA-256 hash of the token is stored
+  (`password_reset_token`, migration `e3b7c1a94d20`, applied to Neon), links expire in 30 minutes,
+  are single use, and issuing a new one retires the user's earlier links. The response never reveals
+  whether an address has an account, and repeated requests are throttled silently. Delivery goes
+  through Resend (or Brevo) — **with no key configured the endpoint answers 503** naming the missing
+  variable rather than reporting a send that never happened. The UI has matching `/forgot-password`
+  and `/reset-password` screens.
 - Analysis is **credit-blocked right now**: the ScrapeCreators account returns
   `402 CREDITS_EXHAUSTED`, so a run collects nothing and every section reports `not_measured`
   (task 18). The failure is now shown in the coverage strip instead of only in `raw_dossier.errors`,

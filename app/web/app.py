@@ -138,11 +138,17 @@ def create_app(test_config=None):
         # it); create its table in the app's database so auth works in both
         # production and tests (in-memory DB).
         try:
-            from .models.user import User as _User, UserSettings as _UserSettings
+            from .models.user import (
+                User as _User,
+                UserSettings as _UserSettings,
+                PasswordResetToken as _PasswordResetToken,
+            )
             _User.__table__.create(bind=db.engine, checkfirst=True)
             _UserSettings.__table__.create(bind=db.engine, checkfirst=True)
+            # Created after `users`: the reset tokens carry a foreign key to it.
+            _PasswordResetToken.__table__.create(bind=db.engine, checkfirst=True)
         except Exception as e:
-            logger.warning(f"users/user_settings table creation failed: {e}")
+            logger.warning(f"users/user_settings/password_reset_token table creation failed: {e}")
 
     return app
 

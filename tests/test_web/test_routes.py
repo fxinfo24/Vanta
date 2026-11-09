@@ -772,3 +772,69 @@ def test_retention_purge_keeps_history_and_drops_posts(app):
         assert stored.result_data["profile_info"]["followers"] == 42
         assert stored.result_data["content_analysis"]["evidence"] == []
         assert DossierSnapshot.query.filter_by(task_id=task.id).count() == 1
+
+
+def test_forgot_password_token_is_single_use_and_changes_the_password(app, monkeypatch):
+    """A reset link works once, then stops working and the password is real."""
+    sent = {}
+    monkeypatch.setenv("RESEND_API_KEY", "test-key-not-used")
+    monkeypatch.setenv("RESET_FROM_EMAIL", "Vanta <reset@example.com>")
+
+    def fake_send(to_email, reset_url):
+        sent["to"] = to_email
+        sent["url"] = reset_url
+
+    monkeypatch.setattr("app.web.auth.send_password_reset_email", fake_send)
+
+    raw = app.test_client()
+    resp = raw.post("/api/auth/forgot-password", json={"email": "test@example.com"})
+    assert resp.status_code == 202
+    assert sent["to"] == "test@example.com"
+    assert "/reset-password?token=" in sent["url"]
+    token = sent["url"].split("token=")[1]
+
+    # Stored as a hash, never as the token itself.
+    with app.app_context():
+        from app.web.models import db
+        from app.web.models.user import PasswordResetToken
+        rows = db.session.query(PasswordResetToken).all()
+        assert len(rows) == 1
+        assert token not in rows[0].token_hash
+        assert rows[0].used_at is None
+
+    assert raw.post("/api/auth/reset-password",
+                    json={"token": token, "new_password": "newpassword123"}).status_code == 200
+
+    login = raw.post("/api/auth/login",
+                     json={"email": "test@example.com", "password": "newpassword123"})
+    assert login.status_code == 200
+
+    # Replaying the same link must fail, and must not reset the password again.
+    replay = raw.post("/api/auth/reset-password",
+                      json={"token": token, "new_password": "anotherpassword123"})
+    assert replay.status_code == 400
+
+
+def test_forgot_password_does_not_reveal_whether_the_account_exists(app, monkeypatch):
+    """Unknown addresses get the same answer as known ones."""
+    monkeypatch.setenv("RESEND_API_KEY", "test-key-not-used")
+    monkeypatch.setattr("app.web.auth.send_password_reset_email", lambda *a, **k: None)
+
+    raw = app.test_client()
+    known = raw.post("/api/auth/forgot-password", json={"email": "test@example.com"})
+    unknown = raw.post("/api/auth/forgot-password", json={"email": "nobody@example.com"})
+
+    assert known.status_code == unknown.status_code == 202
+    assert known.get_json() == unknown.get_json()
+
+
+def test_forgot_password_says_so_when_email_is_not_configured(app, monkeypatch):
+    """No provider means an explicit 503, not a fake 'email sent'."""
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.delenv("BREVO_API_KEY", raising=False)
+
+    resp = app.test_client().post("/api/auth/forgot-password",
+                                  json={"email": "test@example.com"})
+
+    assert resp.status_code == 503
+    assert "RESEND_API_KEY" in resp.get_json()["error"]

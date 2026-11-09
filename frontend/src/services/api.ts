@@ -262,6 +262,23 @@ class ApiService {
     } catch (e) { return this.handleError(e); }
   }
 
+  // Public: request a one-time reset link. The response is intentionally the
+  // same whether or not the address has an account.
+  async forgotPassword(email: string): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.post('/auth/forgot-password', { email });
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
+  // Public: redeem the token from the emailed link.
+  async resetPassword(token: string, new_password: string): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.post('/auth/reset-password', { token, new_password });
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
   async changePassword(current_password: string, new_password: string): Promise<ApiResponse<any>> {
     try {
       const r = await this.api.post('/auth/change-password', { current_password, new_password });

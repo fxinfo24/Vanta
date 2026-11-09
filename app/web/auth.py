@@ -280,3 +280,135 @@ def authenticate_api_key(api_key: str, db: Session) -> Optional[User]:
         return None
         
     return user
+
+
+# ---------------------------------------------------------------------------
+# Password reset (one-time emailed tokens)
+# ---------------------------------------------------------------------------
+# The link carries a random token; the database stores only its SHA-256 hash.
+# Tokens expire (RESET_TOKEN_TTL_MINUTES, default 30), are single use, and
+# issuing a new one retires every unused token for that user.
+
+RESET_TOKEN_TTL_MINUTES = int(os.getenv("RESET_TOKEN_TTL_MINUTES", "30") or "30")
+RESET_MAX_REQUESTS_PER_HOUR = int(os.getenv("RESET_MAX_REQUESTS_PER_HOUR", "3") or "3")
+
+
+class EmailNotConfigured(Exception):
+    """No transactional email provider is configured on this deployment."""
+
+
+class EmailDeliveryError(Exception):
+    """The provider was configured but the message could not be sent."""
+
+
+def _hash_reset_token(raw: str) -> str:
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def issue_reset_token(db: Session, user: User) -> str:
+    """Create a reset token for `user`, retiring any unused earlier ones."""
+    import secrets
+    from .models.user import PasswordResetToken
+
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user.id,
+        PasswordResetToken.used_at.is_(None),
+    ).update({PasswordResetToken.used_at: datetime.utcnow()}, synchronize_session=False)
+
+    raw = secrets.token_urlsafe(32)
+    db.add(PasswordResetToken(
+        user_id=user.id,
+        token_hash=_hash_reset_token(raw),
+        expires_at=datetime.utcnow() + timedelta(minutes=RESET_TOKEN_TTL_MINUTES),
+    ))
+    db.commit()
+    return raw
+
+
+def recent_reset_requests(db: Session, user_id: int) -> int:
+    """How many reset tokens were issued for this user in the last hour."""
+    from .models.user import PasswordResetToken
+    since = datetime.utcnow() - timedelta(hours=1)
+    return db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user_id,
+        PasswordResetToken.created_at >= since,
+    ).count()
+
+
+def consume_reset_token(db: Session, raw: str) -> Optional[User]:
+    """Redeem a reset token. Returns the user, or None if invalid/expired/used."""
+    from .models.user import PasswordResetToken
+
+    if not raw:
+        return None
+    row = db.query(PasswordResetToken).filter(
+        PasswordResetToken.token_hash == _hash_reset_token(raw)
+    ).first()
+    if row is None or row.used_at is not None:
+        return None
+    if row.expires_at is not None and row.expires_at < datetime.utcnow():
+        return None
+    user = db.query(User).filter(User.id == row.user_id).first()
+    if user is None or not user.is_active:
+        return None
+    row.used_at = datetime.utcnow()
+    # Any other outstanding link for this account stops working with the reset.
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user.id,
+        PasswordResetToken.used_at.is_(None),
+    ).update({PasswordResetToken.used_at: datetime.utcnow()}, synchronize_session=False)
+    db.commit()
+    return user
+
+
+def send_password_reset_email(to_email: str, reset_url: str) -> None:
+    """Send the reset link through Resend or Brevo (whichever is configured).
+
+    Raises EmailNotConfigured when neither key exists - the API turns that into
+    an explicit 503 rather than pretending an email went out.
+    """
+    import requests
+
+    sender = os.getenv("RESET_FROM_EMAIL") or "Vanta <onboarding@resend.dev>"
+    subject = "Reset your Vanta password"
+    text_body = (
+        "Use the link below to set a new password. It expires in "
+        f"{RESET_TOKEN_TTL_MINUTES} minutes and can be used once.\n\n{reset_url}\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+
+    resend_key = os.getenv("RESEND_API_KEY")
+    brevo_key = os.getenv("BREVO_API_KEY")
+
+    if resend_key:
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {resend_key}"},
+            json={"from": sender, "to": [to_email], "subject": subject, "text": text_body},
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            raise EmailDeliveryError(f"Resend {resp.status_code}: {resp.text[:200]}")
+        return
+
+    if brevo_key:
+        resp = requests.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={"api-key": brevo_key, "Content-Type": "application/json"},
+            json={
+                "sender": {"email": sender.split("<")[-1].rstrip(">"), "name": "Vanta"},
+                "to": [{"email": to_email}],
+                "subject": subject,
+                "textContent": text_body,
+            },
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            raise EmailDeliveryError(f"Brevo {resp.status_code}: {resp.text[:200]}")
+        return
+
+    raise EmailNotConfigured(
+        "No email provider configured. Set RESEND_API_KEY (or BREVO_API_KEY) and "
+        "RESET_FROM_EMAIL on this service to enable emailed reset links."
+    )

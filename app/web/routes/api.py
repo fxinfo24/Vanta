@@ -34,7 +34,10 @@ api_bp = Blueprint("api", __name__)
 # g.current_user is set by the guard; handlers scope all queries to
 # g.current_user.id so one user can never see another's analyses.
 
-_PUBLIC_ENDPOINTS = {"api.health_check", "api.auth_register", "api.auth_login"}
+_PUBLIC_ENDPOINTS = {
+    "api.health_check", "api.auth_register", "api.auth_login",
+    "api.auth_forgot_password", "api.auth_reset_password",
+}
 
 
 @api_bp.before_request
@@ -133,6 +136,73 @@ def auth_login():
             return jsonify({"error": "Invalid email or password"}), 401
         token = create_access_token({"sub": user.id})
         return jsonify({"user": user_to_dict(user), "token": token}), 200
+    finally:
+        session.close()
+
+
+@api_bp.route("/auth/forgot-password", methods=["POST"])
+def auth_forgot_password():
+    """Email a one-time reset link.
+
+    The response is identical whether or not the address has an account, so this
+    endpoint cannot be used to enumerate users. When no email provider is
+    configured the API says so (503) instead of reporting a send that never
+    happened.
+    """
+    from ..auth import (EmailNotConfigured, EmailDeliveryError, issue_reset_token,
+                        recent_reset_requests, send_password_reset_email)
+
+    data = request.get_json() or {}
+    email = str(data.get("email", "")).strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return jsonify({"error": "Valid email is required"}), 400
+
+    generic = {"message": "If that address has an account, a reset link has been sent."}
+    session = auth_session()
+    try:
+        user = session.query(User).filter(User.email == email).first()
+        if user is None or not user.is_active:
+            return jsonify(generic), 202
+        if recent_reset_requests(session, user.id) >= 3:
+            # Silent no-op: rate limiting must not reveal that the account exists.
+            logger.info(f"Reset request throttled for user {user.id}")
+            return jsonify(generic), 202
+
+        raw = issue_reset_token(session, user)
+        base = (os.getenv("FRONTEND_URL") or request.host_url).rstrip("/")
+        reset_url = f"{base}/reset-password?token={raw}"
+        try:
+            send_password_reset_email(email, reset_url)
+        except EmailNotConfigured as e:
+            return jsonify({"error": str(e)}), 503
+        except EmailDeliveryError as e:
+            logger.error(f"Reset email failed for user {user.id}: {e}")
+            return jsonify({"error": "The email provider rejected the message. Try again later."}), 502
+        logger.info(f"Password reset link issued for user {user.id}")
+        return jsonify(generic), 202
+    finally:
+        session.close()
+
+
+@api_bp.route("/auth/reset-password", methods=["POST"])
+def auth_reset_password():
+    """Redeem a one-time token and set a new password."""
+    from ..auth import consume_reset_token
+
+    data = request.get_json() or {}
+    token = str(data.get("token", "")).strip()
+    new = str(data.get("new_password", ""))
+    if len(new) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
+
+    session = auth_session()
+    try:
+        user = consume_reset_token(session, token)
+        if user is None:
+            return jsonify({"error": "This reset link is invalid, expired, or already used"}), 400
+        user.hashed_password = hash_password(new)
+        session.commit()
+        return jsonify({"message": "Password updated. You can sign in now."}), 200
     finally:
         session.close()
 

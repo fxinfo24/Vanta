@@ -111,3 +111,24 @@ class UserSettings(Base):
 
     def __repr__(self):
         return f"<UserSettings(user_id={self.user_id}, mode={self.default_mode})>"
+
+
+class PasswordResetToken(Base):
+    """Single-use, expiring password reset token.
+
+    Only a SHA-256 hash of the token is stored, so a database leak does not
+    hand out working reset links. Rows are marked `used_at` on success instead
+    of deleted, which keeps "this link was already used" distinguishable from
+    "this link never existed".
+    """
+    __tablename__ = "password_reset_token"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    def __repr__(self):
+        return f"<PasswordResetToken(user_id={self.user_id}, used={bool(self.used_at)})>"

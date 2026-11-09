@@ -47,6 +47,12 @@ envVarGroups:
       # UI (static/dist is not deployed), so pages redirect to the React app.
       - key: FRONTEND_URL
         sync: false
+      # Password reset email delivery. Leave both unset and the reset endpoint
+      # answers 503 instead of pretending an email went out.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESET_FROM_EMAIL
+        sync: false
 
 services:
   - type: web

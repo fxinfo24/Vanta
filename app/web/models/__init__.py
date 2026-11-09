@@ -125,5 +125,6 @@ class Task(db.Model):
         return f"<Task {self.id}: {self.platform}/{self.profile_id} - {self.status}>"
 
 # Import other models to ensure they are registered
+from .user import User, UserSettings, PasswordResetToken  # noqa: E402,F401
 from .dossier import DossierSnapshot, CrossPlatformProfile
 from .verification import SocialMediaPost, Claim, VerificationResult, Platform, MediaType, LanguageCode, ClaimType, VerificationStatus
