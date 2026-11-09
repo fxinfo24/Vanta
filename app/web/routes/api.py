@@ -150,7 +150,8 @@ def auth_forgot_password():
     happened.
     """
     from ..auth import (EmailNotConfigured, EmailDeliveryError, issue_reset_token,
-                        recent_reset_requests, send_password_reset_email)
+                        recent_reset_requests, revoke_reset_token,
+                        send_password_reset_email)
 
     data = request.get_json() or {}
     email = str(data.get("email", "")).strip().lower()
@@ -174,8 +175,12 @@ def auth_forgot_password():
         try:
             send_password_reset_email(email, reset_url)
         except EmailNotConfigured as e:
+            # Nothing was sent, so the token must not survive and must not
+            # consume this caller's hourly allowance.
+            revoke_reset_token(session, raw)
             return jsonify({"error": str(e)}), 503
         except EmailDeliveryError as e:
+            revoke_reset_token(session, raw)
             logger.error(f"Reset email failed for user {user.id}: {e}")
             return jsonify({"error": "The email provider rejected the message. Try again later."}), 502
         logger.info(f"Password reset link issued for user {user.id}")

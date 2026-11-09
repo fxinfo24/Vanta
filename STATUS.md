@@ -86,7 +86,11 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   whether an address has an account, and repeated requests are throttled silently. Delivery goes
   through Resend (or Brevo) — **with no key configured the endpoint answers 503** naming the missing
   variable rather than reporting a send that never happened. The UI has matching `/forgot-password`
-  and `/reset-password` screens.
+  and `/reset-password` screens. **Delivery verified end to end (Nov 2026):** Resend reports
+  `last_event: delivered` for the message, the link points at `https://vanta-intel.vercel.app/reset-password`,
+  redeeming it returns 200, sign-in with the new password works, and replaying the same link returns 400.
+  A failed send now revokes its token (`revoke_reset_token`) — it previously stayed in the table and
+  counted against the 3-per-hour limit, which is what silently swallowed a later request.
 - Analysis is **credit-blocked right now**: the ScrapeCreators account returns
   `402 CREDITS_EXHAUSTED`, so a run collects nothing and every section reports `not_measured`
   (task 18). The failure is now shown in the coverage strip instead of only in `raw_dossier.errors`,

@@ -838,3 +838,9 @@ def test_forgot_password_says_so_when_email_is_not_configured(app, monkeypatch):
 
     assert resp.status_code == 503
     assert "RESEND_API_KEY" in resp.get_json()["error"]
+
+    # A failed send must not leave a token behind or burn the hourly quota.
+    with app.app_context():
+        from app.web.models import db
+        from app.web.models.user import PasswordResetToken
+        assert db.session.query(PasswordResetToken).count() == 0

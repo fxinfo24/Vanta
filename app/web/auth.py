@@ -326,6 +326,19 @@ def issue_reset_token(db: Session, user: User) -> str:
     return raw
 
 
+def revoke_reset_token(db: Session, raw: str) -> None:
+    """Drop a token whose email never went out.
+
+    Without this, a failed send still counted against the per-hour request
+    limit and left a usable-looking row in the table.
+    """
+    from .models.user import PasswordResetToken
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.token_hash == _hash_reset_token(raw)
+    ).delete(synchronize_session=False)
+    db.commit()
+
+
 def recent_reset_requests(db: Session, user_id: int) -> int:
     """How many reset tokens were issued for this user in the last hour."""
     from .models.user import PasswordResetToken
