@@ -696,3 +696,44 @@ def test_analyse_blocked_when_provider_credits_exhausted(client, app, tmp_path, 
     # Nothing was queued for this profile by the blocked request.
     from app.web.models import Task
     assert Task.query.filter_by(profile_id="someone").count() == 0
+
+
+def test_delete_task_removes_task_and_snapshots(client, app):
+    """Erasure must take the derived history with it, not just the row."""
+    from app.web.models import db, DossierSnapshot
+
+    with app.app_context():
+        task = Task(platform="facebook", profile_id="erase_me",
+                    user_id=app.config["TEST_USER_ID"])
+        task.status = TaskStatus.COMPLETED
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+        db.session.add(DossierSnapshot(task_id=task_id, platform="facebook",
+                                       username="erase_me",
+                                       snapshot_data={"followers": 10}))
+        db.session.commit()
+
+    response = client.delete(f"/api/tasks/{task_id}")
+
+    assert response.status_code == 200
+    assert response.get_json()["snapshots_deleted"] == 1
+    with app.app_context():
+        assert db.session.get(Task, task_id) is None
+        assert DossierSnapshot.query.filter_by(task_id=task_id).count() == 0
+
+
+def test_delete_task_refuses_a_run_in_flight(client, app):
+    """Deleting a processing run would let the worker resurrect it."""
+    with app.app_context():
+        task = Task(platform="facebook", profile_id="busy",
+                    user_id=app.config["TEST_USER_ID"])
+        task.status = TaskStatus.PROCESSING
+        from app.web.models import db
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+
+    response = client.delete(f"/api/tasks/{task_id}")
+
+    assert response.status_code == 409

@@ -58,12 +58,20 @@ class ConsumerIntelligenceAnalyzer:
         5. forecast_90_day:
            - predicted_purchases: List of specific objects likely to be bought
            - confidence: 0-1 score for each prediction
-           - reasoning: Evidence-based logic
-           
-        6. marketing_profile:
+           - reasoning: Evidence-based logic        6. marketing_profile:
            - price_sensitivity: "Low", "Medium", "High"
            - influence_susceptibility: 0-10 (How likely to buy from ad/influencer)
-           
+
+        7. evidence: List of receipts, one per material claim:
+           - claim: the specific claim (e.g. "current_usage.brands: Microsoft")
+           - quote: EXACT text copied from DATA SIGNALS - no paraphrase
+
+        EVIDENCE RULES: every brand, product and predicted purchase must be backed by
+        at least one verbatim quote. Receipts that do not match the supplied signals are
+        discarded, taking the claim with them. If the signals contain no commerce
+        material at all, return empty lists and say so in `limitations` rather than
+        inventing a shopping persona.
+
         Format as pure JSON.
         """
         

@@ -562,6 +562,34 @@ class ProfileAuthenticityAnalyzer:
 BENCHMARK_MIN_SAMPLE = 20
 
 
+def validate_benchmark_labels(accounts, sources=None):
+    """Split labels into usable and unusable, citing why each was excluded.
+
+    An ``inauthentic`` label is only worth as much as the source behind it, so a
+    row must name a ``source_ref`` that exists in ``sources``. Rows without one
+    are dropped instead of silently counted as ground truth.
+    """
+    known = {str(s.get("id")) for s in (sources or []) if s.get("id")}
+    usable, rejected = [], []
+    for row in accounts or []:
+        if not row.get("is_inauthentic"):
+            usable.append(row)
+            continue
+        ref = row.get("source_ref")
+        if not ref:
+            rejected.append({"profile_id": row.get("profile_id"),
+                             "reason": "inauthentic label without a source_ref"})
+        elif known and str(ref) not in known:
+            rejected.append({"profile_id": row.get("profile_id"),
+                             "reason": f"source_ref '{ref}' is not in sources"})
+        elif not (row.get("label_reason") or "").strip():
+            rejected.append({"profile_id": row.get("profile_id"),
+                             "reason": "inauthentic label without the platform's stated reason"})
+        else:
+            usable.append(row)
+    return {"usable": usable, "rejected": rejected}
+
+
 def evaluate_authenticity_benchmark(scored, labels, threshold=0.5):
     """Score predictions against ground-truth labels.
 
@@ -622,6 +650,12 @@ def evaluate_authenticity_benchmark(scored, labels, threshold=0.5):
             f"Only {len(rows)} labelled account(s); below {BENCHMARK_MIN_SAMPLE} the "
             "figures are indicative at best and must not be quoted as accuracy."
         )
+    if not any(r["actual_inauthentic"] for r in rows):
+        warnings.append(
+            "No inauthentic account is in the scored set, so recall and precision are "
+            "undefined: the only thing measured is how often a real account is wrongly "
+            "flagged (false-positive rate)."
+        )
     sources = {r["label_source"] for r in rows if r.get("label_source")}
     if len(sources) <= 1:
         warnings.append(
@@ -629,15 +663,19 @@ def evaluate_authenticity_benchmark(scored, labels, threshold=0.5):
             "source's selection criteria rather than independent ground truth."
         )
 
+    has_positives = (tp + fn) > 0
     return {
         "n": len(rows),
-        "usable": len(rows) >= BENCHMARK_MIN_SAMPLE,
+        "usable": len(rows) >= BENCHMARK_MIN_SAMPLE and has_positives,
         "threshold": threshold,
         "confusion": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
         "precision": precision,
         "recall": recall,
         "f1": f1,
-        "accuracy": round((tp + tn) / len(rows), 3),
+        # A set of only-authentic accounts scores 100% "accuracy" while measuring
+        # nothing, so accuracy is withheld until at least one positive exists.
+        "accuracy": round((tp + tn) / len(rows), 3) if has_positives else None,
+        "false_positive_rate": round(fp / (fp + tn), 3) if (fp + tn) else None,
         "rows": rows,
         "warnings": warnings,
     }

@@ -579,6 +579,29 @@ def get_task(task_id):
     return jsonify(task.to_dict())
 
 
+@api_bp.route("/tasks/<int:task_id>", methods=["DELETE"])
+def delete_task(task_id):
+    """Erase a run and everything derived from it, including snapshots.
+
+    Erasure has to be real to mean anything: the collected posts, the dossier and
+    the subject's history entries all go, because a retained snapshot still
+    contains the subject's engagement data. Only finished work can be deleted;
+    a run in flight must be cancelled first so the worker cannot rewrite it.
+    """
+    task = _own_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
+    if task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING):
+        return jsonify({"error": "Cancel the run before deleting it"}), 409
+
+    from app.web.models import DossierSnapshot
+
+    snapshots = DossierSnapshot.query.filter_by(task_id=task.id).delete()
+    db.session.delete(task)
+    db.session.commit()
+    return jsonify({"message": "Task deleted", "task_id": task_id, "snapshots_deleted": snapshots})
+
+
 @api_bp.route("/tasks", methods=["GET"])
 def list_tasks():
     """List all tasks with optional filtering"""

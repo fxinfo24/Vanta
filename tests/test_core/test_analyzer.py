@@ -170,3 +170,59 @@ def test_benchmark_handles_unlabelled_and_missing_scores():
     assert report["n"] == 0
     assert report["usable"] is False
     assert report["rows"] == []
+
+
+def test_benchmark_excludes_uncited_inauthentic_labels():
+    """An 'inauthentic' label without a citation must not count as ground truth."""
+    from app.core.authenticity import validate_benchmark_labels
+
+    sources = [{"id": "twibot-20", "name": "Twibot-20"}]
+    result = validate_benchmark_labels([
+        {"platform": "facebook", "profile_id": "real", "is_inauthentic": False},
+        {"platform": "facebook", "profile_id": "uncited", "is_inauthentic": True},
+        {"platform": "facebook", "profile_id": "unknownref", "is_inauthentic": True,
+         "source_ref": "made-up", "label_reason": "spam"},
+        {"platform": "facebook", "profile_id": "noreason", "is_inauthentic": True,
+         "source_ref": "twibot-20"},
+        {"platform": "facebook", "profile_id": "cited", "is_inauthentic": True,
+         "source_ref": "twibot-20", "label_reason": "automation disclosed by the operator"},
+    ], sources)
+
+    assert [r["profile_id"] for r in result["usable"]] == ["real", "cited"]
+    assert len(result["rejected"]) == 3
+
+
+def test_benchmark_withholds_accuracy_when_no_inauthentic_labels():
+    """Only-authentic sets measure false positives, not accuracy."""
+    from app.core.authenticity import evaluate_authenticity_benchmark
+
+    labels = [{"platform": "facebook", "profile_id": pid, "is_inauthentic": False,
+               "label_source": "official-organisation-account"} for pid in ("a", "b", "c")]
+    scored = [{"platform": "facebook", "profile_id": p, "bot_likelihood": 0.2} for p in ("a", "b")]
+    scored.append({"platform": "facebook", "profile_id": "c", "bot_likelihood": 0.9})
+
+    report = evaluate_authenticity_benchmark(scored, labels)
+
+    assert report["accuracy"] is None
+    assert report["recall"] is None
+    assert report["false_positive_rate"] == 0.333
+    assert any("No inauthentic account" in w for w in report["warnings"])
+
+
+def test_section_receipts_must_be_verbatim_from_collected_posts():
+    """Paraphrased receipts are dropped exactly like invented ones."""
+    from app.core.platform_prompts import verify_claim_evidence
+
+    content = [{"text": "Gas, electricity and water, or I chew up politics."},
+               {"text": "Load shedding again in Dhaka tonight."}]
+    payload = {"temperament": {"label": "Angry"}, "evidence": [
+        {"claim": "temperament=Angry", "quote": "Load shedding again in Dhaka tonight."},
+        {"claim": "interests=hiking", "quote": "Goes hiking every weekend"},
+    ]}
+
+    out = verify_claim_evidence(payload, content, "the lifestyle section")
+
+    assert out["evidence_verified"] == 1
+    assert [e["claim"] for e in out["evidence"]] == ["temperament=Angry"]
+    assert out["evidence_rejected"] == 1
+    assert any("lifestyle" in lim for lim in out["limitations"])

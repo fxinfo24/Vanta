@@ -116,8 +116,18 @@ class BehavioralAnalyzer:
             "psychological_resilience": {{
                 "resist_status": "Resistant" | "Compliant",
                 "resist_description": "Do they resist authority/norms or comply? Are they resilient to stress?"
-            }}
+            }},
+            "evidence": [
+                {{"claim": "temperament=Angry", "quote": "EXACT text copied from CONTENT SAMPLES above"}},
+                {{"claim": "lifestyle_risks.drug_alcohol_indicated=false", "quote": "EXACT text ..."}}
+            ]
         }}
+
+        EVIDENCE RULES: every section above must have at least one entry in `evidence`.
+        Each `quote` must be copied character-for-character from CONTENT SAMPLES - no
+        paraphrase, no translation, no stitching of two posts. A receipt that cannot be
+        matched to the samples is discarded, so an unsupported section reads as
+        unsupported rather than as a finding.
         """
         
         return self.client.analyze(prompt, system_prompt, model_type="psych")

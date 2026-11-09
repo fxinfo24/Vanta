@@ -8,7 +8,7 @@ import logging
 from typing import Dict, Any, List
 
 from .openrouter_client import openrouter_client
-from .platform_prompts import get_platform_context
+from .platform_prompts import get_platform_context, verify_claim_evidence
 
 # Specialized Analyzers
 from .belief_analyzer import BeliefSystemAnalyzer
@@ -66,8 +66,9 @@ class IntelligenceAnalyzer:
             }
             
             # General Analysis
-            report["core_intelligence"]["general_analysis"] = self.ai.analyze_profile_content(
-                profile, content, deep_data
+            general = self.ai.analyze_profile_content(profile, content, deep_data)
+            report["core_intelligence"]["general_analysis"] = verify_claim_evidence(
+                general, content, "the psychology section"
             )
             
             # Authenticity
@@ -93,13 +94,19 @@ class IntelligenceAnalyzer:
             
         # 3. CONSUMER INTELLIGENCE (New Module)
         try:
-            report["consumer_profile"] = self.consumer_engine.generate_consumer_profile(dossier_data)
+            consumer = self.consumer_engine.generate_consumer_profile(dossier_data)
+            report["consumer_profile"] = verify_claim_evidence(
+                consumer, dossier_data.get("content") or [], "the consumer section"
+            )
         except Exception as e:
             logger.error(f"Consumer intelligence failure: {e}")
             report["consumer_profile"]["error"] = str(e)
         # 4. BEHAVIORAL ANALYSIS (New Module)
         try:
-            report["behavioral_profile"] = self.behavior_engine.analyze_behavior(dossier_data)
+            behavioral = self.behavior_engine.analyze_behavior(dossier_data)
+            report["behavioral_profile"] = verify_claim_evidence(
+                behavioral, dossier_data.get("content") or [], "the lifestyle section"
+            )
         except Exception as e:
             logger.error(f"Behavioral analysis failure: {e}")
             report["behavioral_profile"]["error"] = str(e)

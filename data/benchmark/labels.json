@@ -1,13 +1,53 @@
 {
-  "version": 1,
+  "version": 2,
   "created": "2026-11-09",
   "status": "seed",
-  "methodology": "Each label rests on a checkable public fact, not on judgement. 'authentic' entries are official institutional accounts (the organisation verifies its own identity). 'inauthentic' entries must come from a documented source (platform takedown notice or published research dataset) and record that source in label_source; none are included yet because no such list has been verified against these account ids.",
+  "methodology": "Each label rests on a checkable public fact, not on judgement. 'authentic' entries are official institutional accounts (the organisation verifies its own identity). 'inauthentic' entries must carry a source_ref pointing at an entry in `sources`, or they are excluded from scoring by validate_benchmark_labels(). No inauthentic handles are shipped in this file: platform takedowns remove the accounts, so names have to be imported from the cited datasets rather than recalled from memory.",
   "run_requirements": {
     "min_sample": 20,
     "credit_cost_per_deep_run": 14,
-    "note": "Scoring this set needs one collection run per account. 6 seed entries require ~84 provider credits, which exceeds the balance available when this file was written. The set is therefore NOT yet scored and no accuracy figure exists."
+    "note": "Scoring this set needs one collection run per account. The 4 seed entries require ~56 provider credits, which exceeds the balance available when this file was written. The set is therefore NOT yet scored and no accuracy figure exists."
   },
+  "sources": [
+    {
+      "id": "meta-cib",
+      "name": "Meta Coordinated Inauthentic Behavior reports",
+      "url": "https://about.fb.com/news/tag/coordinated-inauthentic-behavior/",
+      "what_it_gives": "Named networks with account/page handle lists and the behaviour that caused removal.",
+      "limitation": "Handles are deleted at takedown, so they can no longer be collected. Useful for behaviour taxonomy and for testing whether the detector flags the described patterns, not for live scoring.",
+      "license_note": "Public company statements; cite the report date in label_source."
+    },
+    {
+      "id": "eu-dsa-transparency",
+      "name": "EU DSA Transparency Database (statements of reasons)",
+      "url": "https://transparency.dsa.ec.europa.eu/",
+      "what_it_gives": "Machine-readable decisions per content/account, including account suspensions with a stated category and legal ground.",
+      "limitation": "Bulk exports are large and mostly content-level; account-level rows need filtering by decision_ground and decision_visibility.",
+      "license_note": "Published under DSA Art. 24; CC-BY-style reuse with attribution to the platform statement."
+    },
+    {
+      "id": "twibot-20",
+      "name": "Twibot-20 labelled Twitter bot dataset",
+      "url": "https://github.com/Luke-linlin/Twibot-20",
+      "what_it_gives": "Account-level human/bot labels with the annotation method and inter-annotator agreement recorded.",
+      "limitation": "Twitter accounts from the 2020 crawl; many are suspended or renamed, so collection will fail for a share of rows. Report the collection success rate with any score.",
+      "license_note": "Research dataset - check its LICENSE before redistributing handles; keep only ids in this repo."
+    },
+    {
+      "id": "botometer",
+      "name": "Botometer (OSoMe, Indiana University) - historical reference implementation",
+      "url": "https://botometer.osome.iu.edu/",
+      "what_it_gives": "A published scoring method whose thresholds can be compared against ours.",
+      "limitation": "Service availability has changed over time and its labels are model output, not ground truth. Use as a comparison baseline, never as a label source.",
+      "license_note": "Cite the accompanying paper when comparing."
+    }
+  ],
+  "harvest_rules": [
+    "An 'inauthentic' label needs a source_ref AND the platform's own stated reason for the action. 'Looks like a bot to me' is not a label.",
+    "Record the collection date of the cited export; a suspended account proves nothing about today's account with the same handle.",
+    "Never re-collect an account that was removed for harassment or abuse: the posts are victims' content and the account is not consenting.",
+    "Keep only profile ids and the citation in this file - no post text, no personal data, from the source dataset."
+  ],
   "accounts": [
     {
       "platform": "facebook",
@@ -43,6 +83,6 @@
     }
   ],
   "exclusions": [
-    "No 'inauthentic' examples are shipped: inventing a bot label would defeat the purpose of the benchmark. Add them from a platform transparency report or a peer-reviewed dataset, recording the citation in label_source."
+    "No 'inauthentic' examples are shipped. Add rows with `is_inauthentic: true`, a `source_ref` naming an id from `sources`, and the platform's stated reason; validate_benchmark_labels() drops uncited rows instead of guessing."
   ]
 }

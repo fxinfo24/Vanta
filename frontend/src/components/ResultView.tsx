@@ -10,7 +10,7 @@ import {
 } from '@heroicons/react/24/outline';
 import {
   Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer,
-  BarChart, Bar, XAxis, YAxis, Tooltip
+  BarChart, Bar, XAxis, YAxis, Tooltip, LineChart, Line, CartesianGrid
 } from 'recharts';
 import NetworkGraph from './NetworkGraph';
 
@@ -303,6 +303,32 @@ const HistoryPanel = ({ results }: { results: AnalysisResult }) => {
         Compared with the previous run{changes?.from_task_id ? ` (task #${changes.from_task_id})` : ''}.
       </p>
 
+      {history.snapshots?.length >= 2 && (
+        <div className="h-48 mb-5">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={history.snapshots.map((s: any, i: number) => ({
+                run: `#${i + 1}`,
+                engagement: s.engagement_rate_percent ?? null,
+                bot: typeof s.bot_likelihood === 'number' ? Math.round(s.bot_likelihood * 100) : null,
+              }))}
+              margin={{ top: 5, right: 10, left: -20, bottom: 0 }}
+            >
+              <CartesianGrid stroke="#ffffff10" />
+              <XAxis dataKey="run" tick={{ fill: '#94a3b8', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: '#1e293b', border: 'none', color: '#fff' }} />
+              <Line type="monotone" dataKey="engagement" name="Engagement %" stroke="#22d3ee" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+              <Line type="monotone" dataKey="bot" name="Bot likelihood %" stroke="#f43f5e" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="text-[11px] text-white/40 mt-1">
+            <span className="text-cyan-300">— engagement rate %</span> · <span className="text-rose-300">— bot likelihood %</span>
+            {' '}across {history.snapshots.length} runs
+          </div>
+        </div>
+      )}
+
       {changes ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {rows.map(([label, value]) => (
@@ -560,6 +586,44 @@ const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefDa
   );
 };
 
+// Receipts shared by the psychology, consumer and lifestyle sections: claim ->
+// the verbatim post text it came from. Quotes are checked server-side against
+// the collected posts, so anything shown here actually exists in the data.
+const Receipts = ({ evidence, rejected, label = 'Receipts' }:
+  { evidence?: any[]; rejected?: number; label?: string }) => {
+  const rows = (evidence || []).filter((e: any) => e && e.quote);
+  if (!rows.length && !rejected) return null;
+  return (
+    <div className="glass-card p-6 rounded-2xl md:col-span-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+        <h3 className="text-xl font-bold text-white">{label}</h3>
+        <span className="text-xs text-white/40">
+          {rows.length} verified quote{rows.length === 1 ? '' : 's'}
+          {rejected ? ` · ${rejected} rejected` : ''}
+        </span>
+      </div>
+      <p className="text-xs text-white/40 mb-3">
+        Verbatim from the collected posts — checked against the source text on the server.
+      </p>
+      <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+        {rows.map((entry: any, i: number) => (
+          <div key={i}>
+            <div className="text-[11px] uppercase tracking-wider text-primary-200">{entry.claim || 'claim'}</div>
+            <div className="text-xs text-white/70 italic border-l-2 border-primary-400/30 pl-2 mt-1 break-words">
+              “{entry.quote}”
+            </div>
+          </div>
+        ))}
+        {rejected ? (
+          <div className="text-[11px] text-amber-200/80">
+            {rejected} suggested quote(s) were rejected because they do not appear in the collected posts.
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
 const ConsumerTab = ({ results }: { results: AnalysisResult }) => (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div className="glass-card p-6 rounded-2xl bg-gradient-to-br from-emerald-500/5 to-transparent">
@@ -596,6 +660,12 @@ const ConsumerTab = ({ results }: { results: AnalysisResult }) => (
         ))}
       </ul>
     </div>
+
+    <Receipts
+      evidence={results.consumer_profile?.evidence}
+      rejected={results.consumer_profile?.evidence_rejected}
+      label="Consumer receipts"
+    />
   </div>
 );
 
@@ -635,6 +705,12 @@ const PsychTab = ({ results, psychData }: { results: AnalysisResult, psychData: 
         </div>
       )}
     </div>
+
+    <Receipts
+      evidence={results.content_analysis?.evidence}
+      rejected={results.content_analysis?.evidence_rejected}
+      label="Psychology receipts"
+    />
   </div>
   );
 };
@@ -776,6 +852,12 @@ const LifestyleTab = ({ results }: { results: AnalysisResult }) => {
           </div>
         </div>
       </div>
+
+      <Receipts
+        evidence={behavior.evidence}
+        rejected={behavior.evidence_rejected}
+        label="Lifestyle receipts"
+      />
 
     </div>
   );

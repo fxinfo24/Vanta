@@ -88,6 +88,64 @@ def _content_availability(content_items: Optional[List[Any]], profile_data: Dict
     return avail
 
 
+def _normalize_quote(value: Any) -> str:
+    """Case/whitespace-insensitive form used to prove a quote is verbatim."""
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+# Short fragments match too easily to prove anything.
+MIN_RECEIPT_QUOTE_CHARS = 10
+
+
+def verify_claim_evidence(payload: Any, content_items: Optional[List[Any]],
+                          section: str = "this section") -> Any:
+    """Drop receipts that are not literal text from the collected posts.
+
+    Prompts ask for ``evidence: [{claim, quote}]``. A paraphrased quote is the
+    same defect as an invented one, so each quote must appear verbatim in the
+    samples. Survivors are kept; the count of removals is stated in
+    ``limitations`` so the user knows the section lost support.
+    """
+    if not isinstance(payload, dict) or "error" in payload:
+        return payload
+    raw = payload.get("evidence")
+    if not raw:
+        return payload
+
+    corpus = "\n".join(
+        _normalize_quote(item.get("text") or item.get("content") or "")
+        for item in (content_items or []) if isinstance(item, dict)
+    )
+
+    entries = []
+    if isinstance(raw, dict):
+        entries = [{"claim": k, "quote": v} for k, v in raw.items()]
+    elif isinstance(raw, list):
+        entries = [e for e in raw if isinstance(e, dict)]
+
+    kept, rejected = [], 0
+    for entry in entries:
+        quote = _normalize_quote(entry.get("quote"))
+        if len(quote) >= MIN_RECEIPT_QUOTE_CHARS and corpus and quote in corpus:
+            kept.append({"claim": str(entry.get("claim") or "").strip(), "quote": entry.get("quote")})
+        else:
+            rejected += 1
+
+    payload["evidence"] = kept
+    payload["evidence_verified"] = len(kept)
+    if rejected:
+        payload["evidence_rejected"] = rejected
+        limitations = payload.get("limitations")
+        if not isinstance(limitations, list):
+            limitations = [limitations] if limitations else []
+        limitations.append(
+            f"{rejected} receipt(s) for {section} were rejected because the quoted text "
+            "does not appear in the collected posts."
+        )
+        payload["limitations"] = limitations
+    return payload
+
+
 def _boundary_text(avail: Dict[str, Any]) -> str:
     """Render DATA BOUNDARIES from the data actually present."""
     lines = ["DATA BOUNDARIES - grounds every claim you may make:"]
@@ -462,6 +520,13 @@ Provide comprehensive analysis in JSON format with these categories:
 9. sentiment_analysis: Object with overall emotional tone and positivity
 10. growth_potential: Assessment of future growth on this platform (0-1)
 11. key_insights: Array of 5 most important {ctx['name']}-specific observations
+12. evidence: Array of receipts for the claims above
+    - claim: the specific claim (e.g. "personality_traits.openness=0.85")
+    - quote: EXACT text copied from RECENT {ctx['content_type'].upper()} - no paraphrase
+
+EVIDENCE RULES: personality_traits and writing_style must each be backed by at least
+one verbatim quote from the samples. Receipts that cannot be matched to the samples
+are discarded, so an unbacked trait reads as unbacked rather than as a finding.
 
 Use numerical scores (0-1) where applicable. Reference platform-specific behaviors."""
 
