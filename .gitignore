@@ -86,6 +86,7 @@ data/uploads/*
 data/results/*
 !data/results/.gitkeep
 data/backups/*
+data/exports/
 !data/backups/.gitkeep
 instance/uploads/*
 instance/results/*
