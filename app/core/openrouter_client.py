@@ -294,7 +294,8 @@ Return comprehensive, platform-specific insights that leverage {ctx['name']}'s u
             logger.error(f"Content analysis failed for {platform}: {e}")
             raise OpenRouterError(f"Analysis failed: {str(e)}")
     
-    def analyze_authenticity(self, profile_data: Dict[str, Any], content_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def analyze_authenticity(self, profile_data: Dict[str, Any], content_analysis: Dict[str, Any],
+                             content_items: Optional[List[Any]] = None) -> Dict[str, Any]:
         """Authenticity analysis using Grok 4.1 Fast"""
         
         # Dossiers store 'follower_count' (singular); some clients use
@@ -312,6 +313,31 @@ Return comprehensive, platform-specific insights that leverage {ctx['name']}'s u
         def _metric(key, raw=None):
             val = raw if raw is not None else profile_data.get(key)
             return f"{val:,}" if val else "unknown (not exposed by provider)"
+
+        # Nothing fetched (provider returned no profile metrics AND no content):
+        # any risk verdict would be a guess dressed as a measurement. Say so.
+        _no_metrics = not any(profile_data.get(k) for k in (
+            "followers_count", "following_count", "posts_count", "bio", "profile_image_url"))
+        if content_items is None:
+            _no_content = not (content_analysis.get("key_insights") or content_analysis.get("content_themes"))
+        else:
+            _no_content = len(content_items) == 0
+        if _no_metrics and _no_content:
+            return {
+                "assessment": "insufficient_data",
+                "risk_assessment": "unknown",
+                "bot_likelihood": None,
+                "overall_authenticity": {"score": None, "confidence": 0.0},
+                "fake_follower_risk": None,
+                "content_authenticity": None,
+                "red_flags": [],
+                "green_flags": [],
+                "limitations": [
+                    "No profile metrics, bio, image or content were returned by the provider for this account.",
+                    "Authenticity cannot be assessed without data; no verdict is being reported.",
+                ],
+            }
+
         profile_metrics = f"""
 Username: @{profile_data.get('username')}
 Account Age: {profile_data.get('created_at', 'Unknown')}

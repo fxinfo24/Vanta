@@ -72,7 +72,7 @@ class IntelligenceAnalyzer:
             
             # Authenticity
             report["core_intelligence"]["authenticity"] = self.ai.analyze_authenticity(
-                profile, report["core_intelligence"]["general_analysis"]
+                profile, report["core_intelligence"]["general_analysis"], content
             )
             
             # Trend Predictions

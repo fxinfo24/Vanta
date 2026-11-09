@@ -239,17 +239,23 @@ const OverviewTab = ({ results }: { results: AnalysisResult; task: any }) => (
         <ShieldCheckIcon className="h-5 w-5 text-emerald-400" /> Authenticity & Risk
       </h3>
       <div className="grid grid-cols-3 gap-4">
-        <StatBox label="Risk Level" value={results.authenticity?.risk_assessment} color={
+        <StatBox label="Risk Level" value={results.authenticity?.risk_assessment || 'Unknown'} color={
           ['critical', 'high'].includes(String(results.authenticity?.risk_assessment || '').toLowerCase()) ? 'text-red-400' :
-            String(results.authenticity?.risk_assessment || '').toLowerCase() === 'medium' ? 'text-yellow-400' : 'text-emerald-400'
+            String(results.authenticity?.risk_assessment || '').toLowerCase() === 'medium' ? 'text-yellow-400' :
+              String(results.authenticity?.risk_assessment || '').toLowerCase() === 'low' ? 'text-emerald-400' : 'text-slate-400'
         } />
-        <StatBox label="Bot Probability" value={`${Math.round((results.authenticity?.bot_likelihood || 0) * 100)}%`} />
-        <StatBox label="Trust Score" value={`${Math.round((results.authenticity?.overall_authenticity?.score || 0) * 100)}%`} />
+        <StatBox label="Bot Probability" value={typeof results.authenticity?.bot_likelihood === 'number' ? `${Math.round(results.authenticity.bot_likelihood * 100)}%` : 'Unknown'} />
+        <StatBox label="Trust Score" value={typeof results.authenticity?.overall_authenticity?.score === 'number' ? `${Math.round(results.authenticity.overall_authenticity.score * 100)}%` : 'Unknown'} />
       </div>
       <div className="mt-6 space-y-2">
         {results.authenticity?.red_flags?.map((flag: string, i: number) => (
           <div key={i} className="flex items-center gap-2 text-red-200 bg-red-500/10 p-2 rounded">
             <span className="w-1.5 h-1.5 rounded-full bg-red-400"></span> {flag}
+          </div>
+        ))}
+        {results.authenticity?.limitations?.map((note: string, i: number) => (
+          <div key={`lim-${i}`} className="flex items-center gap-2 text-slate-300 bg-slate-500/10 p-2 rounded">
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span> {note}
           </div>
         ))}
       </div>
