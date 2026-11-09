@@ -76,6 +76,9 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   `fxinfo24s-projects`), built with `VITE_API_BASE_URL=https://vanta-api-9bqv.onrender.com/api`.
   `https://vanta.vercel.app` is **not available** — it is owned by an unrelated account, so neither a
   rename nor an alias can claim it. CORS pre-flight from the Vercel origin is verified against Render.
+  `FRONTEND_URL` is set on Render so page requests to the API host (which serves no compiled UI)
+  302 to the Vercel app; `/api/*` still answers normally. `https://profile-scope.vercel.app` is the
+  older, duplicate Vercel project (root dir `frontend`, Dec 2025) still serving a stale build.
 - Analysis is **credit-blocked right now**: the ScrapeCreators account returns
   `402 CREDITS_EXHAUSTED`, so a run collects nothing and every section reports `not_measured`
   (task 18). The failure is now shown in the coverage strip instead of only in `raw_dossier.errors`,
