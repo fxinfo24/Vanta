@@ -100,6 +100,38 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   redeeming it returns 200, sign-in with the new password works, and replaying the same link returns 400.
   A failed send now revokes its token (`revoke_reset_token`) — it previously stayed in the table and
   counted against the 3-per-hour limit, which is what silently swallowed a later request.
+- **Monitoring surface (Nov 2026):** every result with two or more snapshots now carries `alerts`
+  and `not_evaluated` computed by `DossierSnapshot.compute_alerts` — followers drop (−3% / −10%),
+  bot-likelihood jump (+0.2 or crossing 0.5), engagement drop (−30% with >= 5 measured posts),
+  cadence drop (−50%), removed posts (>= 3 with comparable coverage), and display-name / badge /
+  bio changes. Each alert names the rule, both numbers and the threshold, so a customer can
+  recompute it from the stored snapshots; a rule whose inputs were not collected is listed as
+  not evaluated instead of silently passing. Thresholds live under an optional `alerts` block in
+  `config/config.json`. Overview renders the list with severity chips.
+- **Feed dedupe + reels pagination (Nov 2026):** Facebook serves the same reel through the posts
+  feed (numeric post id) and the reels feed (encoded id), so the dossier counted it twice — inflating
+  `posts_measured`, which is the engagement denominator, and paying for its comments twice. Content
+  is now merged and deduped by canonical URL keeping the richer copy (`statistics.duplicate_items_removed`),
+  and the comment step skips an item it already requested. The reels endpoint also rejects a page-2
+  request carrying `cursor` without `next_page_id`, which made every deep run log a 400 and stop at
+  page one; both keys are now sent together (verified: 12 reels where 10 was the ceiling).
+- **One implementation for engagement and cadence (Nov 2026):** `engagement_rate_percent` and
+  `posting_cadence` live in `app/utils/helpers.py`; the LLM prompt, the content analyzer and the
+  snapshot all call them, so the same profile cannot show 0.18% in one place and 0.2% in another
+  (verified: 2.62 posts/week from both paths). A rate whose denominator is missing returns None.
+- **Identity, not a suspicious handle (Nov 2026):** several platforms return the numeric user id in
+  `username` when there is no vanity handle. The prompts printed only `@<username>`, so a real page
+  was flagged for having a "numeric handle" while its name went unused. Both prompt builders now
+  render `Display name` plus a handle line that labels a numeric id as a platform id and rules it out
+  as evidence; the report header shows the name with the id beneath it; and flags asserting a numeric
+  handle are dropped with the removal recorded (`filtered_indicators`). Flags about the provider
+  omitting the verified badge move to `data_gaps` the same way (verified live: red_flags empty on
+  "Arif Aziz", risk low, 0.15 bot likelihood).
+- **A stored balance belongs to one key (Nov 2026):** the balance row now stores a truncated SHA-256
+  of the provider key that produced it (migration `a7c9e14f2b83`, applied to Neon). After a key
+  change the stored number describes an account no longer in use, so it is reported as inapplicable
+  instead of rejecting every run with 402 — the deadlock that appeared when a stale zero from an
+  exhausted key met a funded new key. A row with no fingerprint is treated the same way.
 - Analysis is **credit-blocked right now**: the ScrapeCreators account returns
   `402 CREDITS_EXHAUSTED`, so a run collects nothing and every section reports `not_measured`
   (task 18). The failure is now shown in the coverage strip instead of only in `raw_dossier.errors`,
