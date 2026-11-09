@@ -218,6 +218,43 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def normalize_database_uri(uri: Optional[str], default: str = "") -> str:
+    """One URI normalisation for every engine this app builds.
+
+    Handles the four things that bite when a managed Postgres URL is dropped
+    into an `.env`:
+      * `postgres://` (Heroku-style, rejected by SQLAlchemy)
+      * the driver: SQLAlchemy 2.1 assumes psycopg v3 for a bare
+        `postgresql://`, but this project installs psycopg2-binary
+      * a missing `sslmode`, which either fails or silently drops TLS
+      * relative SQLite paths, which the Flask factory would resolve against
+        `instance/` rather than the project root
+    """
+    uri = (uri or "").strip() or (default or "")
+    if not uri:
+        return uri
+
+    if uri.startswith("postgres://"):
+        uri = "postgresql://" + uri[len("postgres://"):]
+    if uri.startswith("postgresql://"):
+        uri = "postgresql+psycopg2://" + uri[len("postgresql://"):]
+    if uri.startswith("postgresql+psycopg2://") and "sslmode=" not in uri:
+        uri += ("&" if "?" in uri else "?") + "sslmode=require"
+
+    prefix = "sqlite:///"
+    if uri.startswith(prefix) and not uri.startswith("sqlite:////"):
+        rel = uri[len(prefix):]
+        if not os.path.isabs(rel) and rel != ":memory:":
+            root = Path(__file__).resolve().parents[2]
+            uri = f"sqlite:///{root / rel}"
+    return uri
+
+
+def database_uri(default: str = "") -> str:
+    """The database this process should use (DATABASE_URI, else DATABASE_URL)."""
+    return normalize_database_uri(os.getenv("DATABASE_URI") or os.getenv("DATABASE_URL"), default)
+
+
 def allows_special_category_inference() -> bool:
     """Whether this deployment may infer Art. 9 categories about a subject.
 

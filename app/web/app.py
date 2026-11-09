@@ -29,10 +29,17 @@ logger = logging.getLogger("Vanta.Web")
 
 # Import db from models (shared SQLAlchemy instance)
 from app.web.models import db
+from app.utils.config import database_uri
+from dotenv import load_dotenv
 
 
 def create_app(test_config=None):
     """Create and configure the Flask application"""
+    # Load .env before reading any environment variable. Without this, a process
+    # that imported the factory before dotenv ran saw DATABASE_URI unset and
+    # silently used SQLite - two processes then served different databases.
+    load_dotenv()
+
     # Create Flask app instance
     app = Flask(
         __name__,
@@ -47,25 +54,16 @@ def create_app(test_config=None):
     os.makedirs(data_dir, exist_ok=True)
     db_path = os.path.join(data_dir, "vanta.db")
 
-    # A relative SQLite URI is resolved by SQLAlchemy against Flask's instance/
-    # folder, so "sqlite:///data/x.db" in .env became instance/data/x.db (which
-    # does not exist) and failed only in processes that load .env before this
-    # factory. Anchor relative paths to the project root instead.
-    def _absolute_sqlite_uri(uri: str) -> str:
-        prefix = "sqlite:///"
-        if not uri or not uri.startswith(prefix) or uri.startswith("sqlite:////"):
-            return uri
-        rel = uri[len(prefix):]
-        if os.path.isabs(rel) or rel == ":memory:":
-            return uri
-        return f"sqlite:///{os.path.join(project_root, rel)}"
+    # URI normalisation (relative SQLite anchor, postgres alias, driver, SSL) is
+    # shared with app/web/database.py so the two engines cannot drift apart.
 
     # Load default configuration
     app.config.from_mapping(
         SECRET_KEY=os.environ.get("SECRET_KEY", "dev-key-for-development-only"),
-        SQLALCHEMY_DATABASE_URI=_absolute_sqlite_uri(
-            os.environ.get("DATABASE_URI", f"sqlite:///{db_path}")
-        ),
+        SQLALCHEMY_DATABASE_URI=database_uri(f"sqlite:///{db_path}"),
+        # A pooled Postgres endpoint drops idle connections; without pre-ping the
+        # first query after a quiet spell fails with a dead-connection error.
+        SQLALCHEMY_ENGINE_OPTIONS={"pool_pre_ping": True, "pool_recycle": 280},
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         RESULTS_FOLDER=os.path.join(os.getcwd(), "data", "results"),
     )
@@ -126,18 +124,16 @@ def create_app(test_config=None):
         register_filters(app)
 
         # Database schema management
-        # - In development/tests, `db.create_all()` is convenient.
-        # - In production (Railway/Postgres), prefer Alembic migrations:
-        #   `flask db upgrade`
-        # Consolidated verification tables are created if missing so Product B
-        # works without a separate migration flow:
-        if app.config.get("TESTING"):
+        # - SQLite / tests: `db.create_all()` is convenient.
+        # - Postgres: Alembic owns the schema (`flask db upgrade`). Calling
+        #   create_all() there made every migration fail with "type taskstatus
+        #   already exists", because the app had already built the tables and
+        #   left alembic_version empty.
+        _db_uri = str(app.config.get("SQLALCHEMY_DATABASE_URI") or "")
+        if app.config.get("TESTING") or _db_uri.startswith("sqlite"):
             db.create_all()
         else:
-            try:
-                db.create_all()
-            except Exception as e:
-                logger.warning(f"db.create_all() failed (migrations recommended in prod): {e}")
+            logger.info("Schema is managed by migrations; run `flask db upgrade` after deploying")
         # User lives on the legacy declarative Base (enterprise modules use
         # it); create its table in the app's database so auth works in both
         # production and tests (in-memory DB).

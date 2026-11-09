@@ -292,7 +292,9 @@ Here’s how I want you to respond:
 - `.env.example` contains the canonical environment variables to copy into `.env`.
 - Common environment variables:
   - `FLASK_HOST`, `FLASK_PORT`, `FLASK_DEBUG`
-  - `DATABASE_URI` (defaults to SQLite)
+  - `DATABASE_URI` (defaults to SQLite; `DATABASE_URL` is accepted as the managed-Postgres convention)
+  - Use the **pooled** endpoint for app traffic, the **direct** one (`DATABASE_URL_UNPOOLED`) for `flask db upgrade`
+  - On Postgres, Alembic owns the schema: `create_all()` is skipped, so a new table needs a migration
   - API keys (legacy): `TWITTER_*`, `FACEBOOK_*`
 - JSON config:
   - `config/config.json` contains app defaults (logging, output locations, analysis settings).
