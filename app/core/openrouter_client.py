@@ -4,6 +4,7 @@ Universal Large Language Model integration using OpenRouter API
 """
 
 import os
+import re
 import requests
 import json
 from typing import Dict, Any, List, Optional
@@ -24,12 +25,208 @@ from .platform_prompts import (
     build_content_analysis_prompt,
     build_authenticity_prompt,
     build_prediction_prompt,
-    SUPPORTED_PLATFORMS
+    SUPPORTED_PLATFORMS,
+    _content_availability,
+    _boundary_text,
 )
 
 class OpenRouterError(Exception):
     """OpenRouter API related errors"""
     pass
+
+
+# ---------------------------------------------------------------------------
+# Authenticity grounding
+# ---------------------------------------------------------------------------
+# An indicator is only admissible if the dimension it reasons about was
+# actually collected. Availability is COMPUTED from the samples (a deep
+# Facebook dossier does carry reaction/share/comment counts and video/image
+# metadata) instead of being hardcoded per platform, and a deterministic pass
+# then removes indicators that assert something about a dimension with no
+# data behind it. Prompt constraints alone were not enforced often enough.
+
+# dimension -> (label, trigger pattern). The label is what the user sees when
+# an indicator is dropped for lack of data.
+_DIMENSION_TERMS = {
+    "engagement": (
+        "engagement/reach",
+        r"\bengagement\b|\breach\b|\bimpressions?\b|\bshadow-?ban|\bsuppress\w*"
+        r"|\bviral\b|\breactions?\b|\bshares?\b|\blikes?\b|\bviews?\b",
+    ),
+    "media": (
+        "video/image metadata",
+        r"\breels?\b|\bvideos?\b|\blive\s?streams?\b|\bmultimedia\b|\bphotos?\b"
+        r"|\bimages?\b|\bvisual\w*|\bcarousel\b|\bstories\b",
+    ),
+    "network": (
+        "follower/following network data",
+        r"\bcoordinated\b|\bbot\s+network|\bnetwork\s+of\b|\bfollow[- ]for[- ]follow\b"
+        r"|\breciprocal\w*|\bfollower\s+farm|\bastroturf\w*|\btroll\s+farm"
+        r"|\binauthentic\s+(behavio\w*|activity)|\bpurchased\s+(followers?|engagement)",
+    ),
+    "demographics": (
+        "audience demographic data",
+        r"\bdemograph\w*|\bgender\w*|\bmales?\b|\bfemales?\b|\bage\s+(range|bracket|group|distribution)"
+        r"|\baudience\s+(is|are|composition|skew)|\bcommenters?\s+(are|is|skew)",
+    ),
+    "groups": (
+        "group membership data",
+        r"\bgroups?\b|\bcommunities\b",
+    ),
+}
+
+# Phrases about the profile picture are a profile metric, not content media.
+_PROFILE_IMAGE_RE = re.compile(r"profile\s+(image|picture)|avatar", re.IGNORECASE)
+
+
+# "There is none of X" where X demonstrably exists in the samples.
+_ABSENCE_RE = re.compile(
+    r"\b(no|zero|none|never|lacks?|lacking|without|absent|missing|not?\s+any)\b", re.IGNORECASE
+)
+_MEDIA_PRESENT_RE = re.compile(r"\breels?\b|\bvideos?\b|\bmultimedia\b|\blive\b", re.IGNORECASE)
+
+
+def _normalize_text(value: Any) -> str:
+    """Case/whitespace-insensitive form used to prove a quote is verbatim."""
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _validate_topical_focus(result: Dict[str, Any], content_items: Optional[List[Any]]) -> Dict[str, Any]:
+    """Ground the topical description in verbatim samples.
+
+    A niche - political or otherwise - is an observable property of the posts,
+    so it is reported as a fact. It is deliberately NOT a risk signal: topic
+    alone says nothing about whether an account is authentic. Any evidence
+    quote the model paraphrased rather than copied is removed here, because an
+    unverifiable quote is the same defect as an invented one.
+    """
+    if not isinstance(result, dict):
+        return result
+    focus = result.get("topical_focus")
+    if not isinstance(focus, dict):
+        return result
+
+    texts = []
+    for item in content_items or []:
+        if isinstance(item, dict):
+            texts.append(_normalize_text(item.get("text") or item.get("content") or ""))
+    corpus = "\n".join(texts)
+
+    raw_evidence = focus.get("evidence")
+    kept, dropped = [], []
+    for quote in raw_evidence if isinstance(raw_evidence, list) else []:
+        probe = _normalize_text(quote)
+        # Short fragments match too often to prove anything.
+        if len(probe) >= 8 and probe in corpus:
+            kept.append(quote)
+        else:
+            dropped.append(quote)
+
+    focus["evidence"] = kept
+    focus["evidence_verified"] = bool(kept)
+    focus["evidence_provided"] = len(kept) + len(dropped)
+
+    intensity = focus.get("political_intensity")
+    try:
+        focus["political_intensity"] = max(0.0, min(1.0, float(intensity)))
+    except (TypeError, ValueError):
+        focus["political_intensity"] = None
+
+    if not isinstance(focus.get("primary_topic"), str) or not focus["primary_topic"].strip():
+        focus["primary_topic"] = "Unknown"
+
+    if dropped:
+        limitations = result.get("limitations")
+        if not isinstance(limitations, list):
+            limitations = [limitations] if limitations else []
+        limitations.append(
+            f"{len(dropped)} topical quote(s) were removed because they do not appear "
+            "verbatim in the collected posts."
+        )
+        result["limitations"] = limitations
+
+    result["topical_focus"] = focus
+    return result
+
+
+
+def _filter_unbacked_flags(flags: Any, avail: Dict[str, Any]) -> tuple:
+    """Drop indicators the collected samples cannot support.
+
+    Two rejection reasons:
+      * the dimension the indicator reasons about was never collected;
+      * the indicator asserts absence of something the samples demonstrably
+        contain (e.g. "no multimedia" while 11 reels were collected).
+
+    Returns ``(kept_flags, dropped_flags, reason_labels)`` so the caller can
+    record the removal instead of applying it silently.
+    """
+    kept, dropped, reasons = [], [], set()
+    for flag in flags or []:
+        text = flag if isinstance(flag, str) else json.dumps(flag, ensure_ascii=False)
+        lowered = text.lower()
+        reason = None
+
+        if avail["video_items"] and _ABSENCE_RE.search(text) and _MEDIA_PRESENT_RE.search(text):
+            reason = "contradicted by collected video/image data"
+        else:
+            for dimension, (label, pattern) in _DIMENSION_TERMS.items():
+                if avail.get(f"has_{dimension}"):
+                    continue
+                if dimension == "media" and _PROFILE_IMAGE_RE.search(text):
+                    # Mentions the profile picture only: that is a profile metric,
+                    # not content media.
+                    if not _MEDIA_PRESENT_RE.search(text):
+                        continue
+                if re.search(pattern, lowered):
+                    reason = label
+                    break
+
+        if reason:
+            dropped.append(flag)
+            reasons.add(reason)
+        else:
+            kept.append(flag)
+    return kept, dropped, reasons
+
+
+def _apply_flag_grounding(result: Dict[str, Any], avail: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter indicators and record any removal in ``limitations``."""
+    if not isinstance(result, dict) or "error" in result:
+        return result
+    dropped_all: List[str] = []
+    reasons: set = set()
+    for key in ("red_flags", "green_flags"):
+        kept, dropped, why = _filter_unbacked_flags(result.get(key), avail)
+        if key in result or kept:
+            result[key] = kept
+        dropped_all.extend(dropped)
+        reasons |= why
+    if dropped_all:
+        result["filtered_indicators"] = dropped_all
+        limitations = result.get("limitations")
+        if not isinstance(limitations, list):
+            limitations = [limitations] if limitations else []
+        limitations.append(
+            f"{len(dropped_all)} indicator(s) were discarded: they relied on "
+            f"{'; '.join(sorted(reasons))}."
+        )
+        result["limitations"] = limitations
+    return result
+
+
+def _filter_unsupported_claims(claims: Any, avail: Dict[str, Any], label: str = "insight") -> tuple:
+    """Apply the same grounding test to prose claims (content key_insights).
+
+    Text insight lists fabricate in exactly the same way flags do - "algorithmic
+    suppression", "zero group participation" - so they are held to the same
+    rule instead of relying on the prompt alone.
+    """
+    kept, dropped, reasons = _filter_unbacked_flags(claims, avail)
+    if dropped:
+        logger.info(f"Discarded {len(dropped)} unsupported {label}(s): {sorted(reasons)}")
+    return kept, dropped, reasons
+
 
 class OpenRouterClient:
     """Enhanced client for OpenRouter API - Universal LLM Access"""
@@ -128,6 +325,39 @@ class OpenRouterClient:
             "Expecting value",
             "Expecting ':' delimiter",
         ))
+
+    def _request_json(self, messages: List[Dict[str, str]], model: str, temperature: float,
+                      max_tokens: int, label: str = "analysis") -> Any:
+        """Request a JSON completion with the recovery paths every caller needs.
+
+        Empty completion -> one retry. Truncated JSON -> one re-request at double
+        budget (capped). Anything still unparseable raises JSONDecodeError so the
+        caller reports absence instead of inventing defaults.
+        """
+        response = self._make_request(
+            messages=messages, model=model, temperature=temperature, max_tokens=max_tokens
+        ) or ""
+        if not response.strip():
+            logger.warning(f"Empty completion for {label}, retrying once")
+            response = self._make_request(
+                messages=messages, model=model, temperature=temperature, max_tokens=max_tokens
+            ) or ""
+        if not response.strip():
+            raise ValueError(f"Empty LLM response for {label} after retry")
+
+        try:
+            return self._parse_json(self._clean_json_text(response))
+        except json.JSONDecodeError as e:
+            if not self._is_truncation_error(e):
+                raise
+            logger.warning(f"Truncated JSON for {label} ({e}); retrying with larger max_tokens")
+            retry = self._make_request(
+                messages=messages, model=model, temperature=temperature,
+                max_tokens=min(max_tokens * 2, 12000),
+            ) or ""
+            if not retry.strip():
+                raise
+            return self._parse_json(self._clean_json_text(retry))
 
     def analyze(self, prompt: str, system_prompt: str = None, model_type: str = "general", max_tokens: int = 6000) -> Dict[str, Any]:
         """
@@ -240,7 +470,14 @@ class OpenRouterClient:
         
         # Enhanced Vanta Context: Inject Deep Data
         if deep_data:
-            user_prompt += f"\n\nDEEP ANALYSIS DATA (Transcripts, Comments, Demographics):\n{json.dumps(deep_data, indent=2, default=str)}\n\nUse this deep data to infer psychological traits, audience demographics, and hidden behavioral patterns."
+            user_prompt += (
+                f"\n\nDEEP ANALYSIS DATA (Transcripts, Comments, Demographics):\n"
+                f"{json.dumps(deep_data, indent=2, default=str)}\n\n"
+                "Use this deep data only to the extent it actually covers something: transcripts for "
+                "spoken content, comments for audience reaction. A handful of comments is not an "
+                "audience sample - do not generalise demographics or draw behavioural conclusions "
+                "beyond what is shown."
+            )
         ctx = get_platform_context(platform)
         
         messages = [
@@ -258,37 +495,49 @@ Return comprehensive, platform-specific insights that leverage {ctx['name']}'s u
         ]
         
         try:
-            response = self._make_request(
-                messages=messages,
+            analysis = self._request_json(
+                messages,
                 model=self.default_models["content_analysis"],
                 temperature=0.3,
-                max_tokens=3500
+                max_tokens=3500,
+                label=f"content_analysis:{platform}",
             )
-            
-            # Clean response if needed (remove markdown code blocks)
-            clean_response = response.strip()
-            if clean_response.startswith("```json"):
-                clean_response = clean_response[7:]
-            if clean_response.startswith("```"):
-                clean_response = clean_response[3:]
-            if clean_response.endswith("```"):
-                clean_response = clean_response[:-3]
-            
-            # Parse JSON response
-            analysis = json.loads(clean_response.strip())
             analysis["_platform"] = platform
             analysis["_model_used"] = self.default_models["content_analysis"]
+
+            # Insights carry the same fabrication risk as authenticity flags:
+            # hold them to the dimensions this collection actually covers.
+            avail = _content_availability(posts, profile_data)
+            kept, dropped, reasons = _filter_unsupported_claims(
+                analysis.get("key_insights"), avail
+            )
+            if isinstance(analysis.get("key_insights"), list):
+                analysis["key_insights"] = kept
+            if dropped:
+                analysis["filtered_insights"] = dropped
+                limitations = analysis.get("limitations")
+                if not isinstance(limitations, list):
+                    limitations = [limitations] if limitations else []
+                limitations.append(
+                    f"{len(dropped)} insight(s) were discarded: they relied on "
+                    f"{'; '.join(sorted(reasons))}."
+                )
+                analysis["limitations"] = limitations
             return analysis
             
-        except json.JSONDecodeError as e:
-            # Fallback if JSON parsing fails
-            logger.warning(f"Failed to parse JSON response for {platform}: {e}")
+        except (json.JSONDecodeError, ValueError) as e:
+            # No usable structure: report that, rather than placing placeholder
+            # themes/insights that would be read as findings.
+            logger.warning(f"Content analysis unavailable for {platform}: {e}")
             return {
-                "error": "Failed to parse structured response",
-                "raw_analysis": response,
-                "content_themes": ["analysis_available"],
-                "key_insights": ["Raw analysis available in raw_analysis field"],
-                "_platform": platform
+                "error": "Analysis could not be generated in this run",
+                "content_themes": [],
+                "key_insights": [],
+                "limitations": [
+                    "The content analysis did not produce usable output; the related "
+                    "tabs are empty rather than filled with placeholder findings."
+                ],
+                "_platform": platform,
             }
         except Exception as e:
             logger.error(f"Content analysis failed for {platform}: {e}")
@@ -338,6 +587,11 @@ Return comprehensive, platform-specific insights that leverage {ctx['name']}'s u
                 ],
             }
 
+        # What the samples actually contain decides both what the prompt may
+        # permit and which indicators survive validation below.
+        avail = _content_availability(content_items, profile_data)
+        boundaries = _boundary_text(avail)
+
         profile_metrics = f"""
 Username: @{profile_data.get('username')}
 Account Age: {profile_data.get('created_at', 'Unknown')}
@@ -350,24 +604,31 @@ Profile Image: {'Present' if profile_data.get('profile_image_url') else 'Missing
         """.strip()
         
         content_summary = json.dumps(content_analysis.get('key_insights', []), indent=2)
+
+        # Verbatim post text: the model may describe the account's topical focus
+        # only by quoting from here, and those quotes are checked afterwards.
+        samples = []
+        for item in (content_items or [])[:15]:
+            if isinstance(item, dict):
+                body = str(item.get("text") or item.get("content") or "").strip()
+                if body:
+                    samples.append(f"- {body[:300]}")
+        verbatim_samples = "\n".join(samples) or "(no post text was collected)"
         
         messages = [
             {
                 "role": "system",
-                "content": """You are a cybersecurity expert specializing in fake account detection and 
+                "content": f"""You are a cybersecurity expert specializing in fake account detection and 
                 social media authenticity analysis. Analyze profiles for signs of automation, bot behavior, 
                 purchased followers, and other authenticity issues.
                 CRITICAL: If 'Verified' is True, start with a high base trust score (>0.8) unless you find specific evidence of compromise (hacked verified account).
                 CRITICAL: Any metric marked 'unknown (not exposed by provider)' is MISSING data, not zero.
                 Never treat an unknown metric as evidence (e.g. do not infer purchased followers from an
-                unknown following count), and never claim group participation, multimedia usage, or
-                demographic composition when the data does not contain them.
-                DATA BOUNDARIES - this dataset contains NO media-type metadata (every sample
-                media_type=unknown), NO engagement metrics (likes/shares/reactions), NO group
-                membership data, and NO audience demographic breakdowns. Absence of such data in
-                the samples is NOT evidence of absence on the account: do NOT state 'no video/Reels',
-                'zero multimedia', 'near-zero engagement', 'shadow suppression' or any reach/engagement
-                claim as a flag. State only what the metrics above actually show."""
+                unknown following count).
+                Every red/green flag must be traceable to a number or a sample in the data below;
+                indicators that reference a dimension marked unavailable will be discarded.
+
+                {boundaries}"""
             },
             {
                 "role": "user",
@@ -375,6 +636,9 @@ Profile Image: {'Present' if profile_data.get('profile_image_url') else 'Missing
 
 PROFILE METRICS:
 {profile_metrics}
+
+DATASET:
+{boundaries}
 
 CONTENT ANALYSIS INSIGHTS:
 {content_summary}
@@ -389,33 +653,48 @@ Provide authenticity analysis in JSON format:
 7. green_flags: Array of positive authenticity indicators
 8. recommendations: Array of verification steps to confirm authenticity
 9. risk_assessment: String level (low/medium/high/critical)
+10. topical_focus: Object describing what this account actually talks about:
+    - primary_topic: 3-8 word label (e.g. "regional politics and civic commentary")
+    - political_intensity: 0-1, the share of samples that are political or civic
+    - evidence: 2-3 snippets copied VERBATIM from COLLECTED POSTS below (no paraphrase, no translation)
+    Topic is a property of the posts, NOT a trust signal: never turn a topical niche
+    (political or otherwise) into a red flag, a green flag, or a risk level by itself.
+    If the samples are too thin to characterise the topic, use "Unknown" and no evidence.
 
-Be thorough in detecting fake accounts, bot networks, and purchased engagement."""
+COLLECTED POSTS (verbatim, for topical_focus evidence only):
+{verbatim_samples}
+
+Be thorough in detecting fake accounts, bot networks, and purchased engagement - 
+but only on evidence the DATASET section says was collected."""
             }
         ]
         
         try:
-            response = self._make_request(
-                messages=messages,
+            result = self._request_json(
+                messages,
                 model=self.default_models["authenticity_analysis"],
                 temperature=0.2,
-                max_tokens=2000
+                max_tokens=3000,
+                label="authenticity",
             )
-            
-            # Clean possible markdown
-            clean_response = response.strip()
-            if clean_response.startswith("```json"): clean_response = clean_response[7:]
-            if clean_response.startswith("```"): clean_response = clean_response[3:]
-            if clean_response.endswith("```"): clean_response = clean_response[:-3]
+            grounded = _apply_flag_grounding(result, avail)
+            return _validate_topical_focus(grounded, content_items)
 
-            return json.loads(clean_response)
-            
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse authenticity analysis JSON: {e}")
+        except (json.JSONDecodeError, ValueError) as e:
+            # A 0.5 "default score" here read as a measurement. There is no
+            # verdict when the analysis did not complete, so say exactly that.
+            logger.warning(f"Authenticity analysis unavailable: {e}")
             return {
-                "overall_authenticity": {"score": 0.5, "confidence": 0.3},
-                "error": "Failed to parse structured response",
-                "raw_response": response
+                "assessment": "analysis_unavailable",
+                "risk_assessment": "unknown",
+                "bot_likelihood": None,
+                "overall_authenticity": {"score": None, "confidence": 0.0},
+                "red_flags": [],
+                "green_flags": [],
+                "error": "Authenticity analysis could not be generated in this run",
+                "limitations": [
+                    "The authenticity analysis did not produce usable output; no verdict is being reported.",
+                ],
             }
         except Exception as e:
             logger.error(f"Authenticity analysis failed: {e}")
@@ -457,25 +736,24 @@ Base predictions on observable patterns and industry benchmarks."""
             }
         ]
         
-        try:
-            response = self._make_request(
-                messages=messages,
-                model=self.default_models["trend_analysis"],
-                temperature=0.4,
-                max_tokens=2500
-            )
-            
-            return json.loads(response)
-            
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse predictions JSON")
+        # Route through analyze(): it retries empty completions and re-requests
+        # once at double budget when the JSON looks truncated. The old direct
+        # parse() fell back to a zeroed forecast, which read as data ("0 growth")
+        # when in fact nothing had been produced.
+        result = self.analyze(
+            prompt=messages[1]["content"],
+            system_prompt=messages[0]["content"],
+            model_type="trend_analysis",
+            max_tokens=4000,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            logger.warning("Predictions unavailable: %s", result.get("error"))
             return {
-                "growth_forecast": {"30_day": 0, "90_day": 0, "365_day": 0},
-                "error": "Failed to parse structured response"
+                "growth_forecast": {"30_day": None, "90_day": None, "365_day": None},
+                "error": "Predictions could not be generated in this run",
+                "limitations": ["Prediction output was not produced; no forecast is being reported."],
             }
-        except Exception as e:
-            logger.error(f"Prediction generation failed: {e}")
-            raise OpenRouterError(f"Prediction generation failed: {str(e)}")
+        return result
     
     def get_quick_summary(self, profile_data: Dict[str, Any]) -> str:
         """Generate a quick human-readable summary"""

@@ -254,10 +254,32 @@ const OverviewTab = ({ results }: { results: AnalysisResult; task: any }) => (
           </div>
         ))}
         {results.authenticity?.limitations?.map((note: string, i: number) => (
-          <div key={`lim-${i}`} className="flex items-center gap-2 text-slate-300 bg-slate-500/10 p-2 rounded">
-            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span> {note}
+          <div key={`lim-${i}`} className="flex items-start gap-2 text-slate-300 bg-slate-500/10 p-2 rounded">
+            <span className="w-1.5 h-1.5 mt-2 shrink-0 rounded-full bg-slate-400"></span> <span>{note}</span>
           </div>
         ))}
+        {results.authenticity?.topical_focus?.primary_topic &&
+          results.authenticity.topical_focus.primary_topic !== 'Unknown' && (
+            <div className="mt-4 rounded-xl bg-white/5 border border-white/10 p-3">
+              <div className="text-[11px] uppercase tracking-wider text-white/50">Topical focus</div>
+              <div className="text-sm text-white/85 mt-1">
+                {results.authenticity.topical_focus.primary_topic}
+                {typeof results.authenticity.topical_focus.political_intensity === 'number' && (
+                  <span className="text-white/50">
+                    {' '}· {Math.round(results.authenticity.topical_focus.political_intensity * 100)}% political
+                  </span>
+                )}
+              </div>
+              {(results.authenticity.topical_focus.evidence || []).map((quote: string, i: number) => (
+                <div key={`tf-${i}`} className="text-xs text-white/60 italic mt-2 border-l-2 border-primary-400/40 pl-2">
+                  “{quote}”
+                </div>
+              ))}
+              <div className="text-[11px] text-white/40 mt-2">
+                Subject matter only — a topic is not evidence of inauthenticity.
+              </div>
+            </div>
+          )}
       </div>
     </div>
 
@@ -312,6 +334,12 @@ const OverviewTab = ({ results }: { results: AnalysisResult; task: any }) => (
 const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefData: any[] }) => {
   // Backend stores `POLITICAL_COMPASS` (underscores); tolerate the old spaced key.
   const compass = results.belief_system?.POLITICAL_COMPASS || results.belief_system?.['POLITICAL COMPASS'] || {};
+  // Every belief claim should be traceable to a quoted post.
+  const calibration = results.belief_system?.EVIDENCE_AND_CALIBRATION || results.belief_system?.['EVIDENCE AND CALIBRATION'] || {};
+  const evidenceAxes = Object.entries(calibration.evidence || {}).filter(
+    ([, quotes]: [string, any]) => Array.isArray(quotes) && quotes.length > 0
+  ) as [string, string[]][];
+  const quoteTotal = evidenceAxes.reduce((n, [, quotes]) => n + quotes.length, 0);
   return (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div className="glass-card p-6 rounded-2xl">
@@ -350,6 +378,38 @@ const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefDa
         </ResponsiveContainer>
       </div>
     </div>
+
+    {evidenceAxes.length > 0 && (
+      <div className="glass-card p-6 rounded-2xl md:col-span-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-xl font-bold text-white">Evidence behind each claim</h3>
+          <span className="text-xs text-white/40">
+            {calibration.evidence_count ?? quoteTotal} quoted samples · quality{' '}
+            <span className="text-white/60">{calibration.evidence_quality || 'unknown'}</span>
+          </span>
+        </div>
+        <p className="text-xs text-white/40 mt-1 mb-4">
+          Verbatim from the collected posts — the raw text each position is drawn from.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-96 overflow-y-auto pr-1">
+          {evidenceAxes.map(([axis, quotes]) => (
+            <div key={axis} className="rounded-xl bg-white/5 border border-white/10 p-3">
+              <div className="text-[11px] uppercase tracking-wider text-primary-200 mb-2">
+                {axis.replace(/_/g, ' ')}
+              </div>
+              {quotes.map((quote, i) => (
+                <div
+                  key={i}
+                  className="text-xs text-white/70 italic border-l-2 border-primary-400/30 pl-2 mt-1.5 break-words"
+                >
+                  {quote}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
   </div>
   );
 };

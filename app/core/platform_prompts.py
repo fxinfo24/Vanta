@@ -3,7 +3,142 @@ Vanta: Platform-Specific AI Prompts
 Optimized Grok 4.1 prompts for each platform's unique characteristics
 """
 
-from typing import Dict, Any
+import re
+from typing import Dict, Any, List, Optional
+
+
+# ---------------------------------------------------------------------------
+# Data availability
+# ---------------------------------------------------------------------------
+# Dossiers differ by provider: a deep Facebook item carries `reactionCount`,
+# `share_count`, `commentCount`, `videoDetails` and `/reel/` URLs, while a thin
+# item carries none of those. Hardcoding "we have no engagement/media data" for
+# a platform therefore told the model to ignore data it had been given, and "no
+# engagement" leaks out as "zero engagement". Availability is computed from the
+# samples and both prompts render it verbatim.
+
+_ENGAGEMENT_KEYS = (
+    "reactionCount", "reaction_count", "share_count", "shares",
+    "commentCount", "comment_count", "videoViewCount", "view_count",
+    "like_count", "likes", "reactions",
+)
+
+# Minimum number of comment authors carrying a stated gender before audience
+# composition may be described at all (n=4 must never become "100% male").
+MIN_DEMOGRAPHIC_SAMPLE = 10
+
+
+def _content_availability(content_items: Optional[List[Any]], profile_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Describe what the collected samples actually contain."""
+    items = [i for i in (content_items or []) if isinstance(i, dict)]
+    avail: Dict[str, Any] = {
+        "n_items": len(items),
+        "engagement_items": 0,
+        "reactions": 0,
+        "shares": 0,
+        "comments": 0,
+        "median_reactions": 0,
+        "video_items": 0,
+        "image_items": 0,
+        "gendered_commenters": 0,
+        "has_network": False,
+        "has_groups": False,
+        "has_profile_image": bool(profile_data.get("profile_image_url")),
+    }
+
+    reactions = []
+    for item in items:
+        if any(item.get(k) is not None for k in _ENGAGEMENT_KEYS):
+            avail["engagement_items"] += 1
+            reactions_count = item.get("reactionCount", item.get("reaction_count"))
+            if reactions_count is None:
+                reactions_count = item.get("likes", item.get("reactions"))
+            if isinstance(reactions_count, int):
+                reactions.append(reactions_count)
+            avail["reactions"] += int(item.get("reactionCount", item.get("reaction_count")) or 0)
+            avail["shares"] += int(item.get("share_count", item.get("shares")) or 0)
+            avail["comments"] += int(item.get("commentCount", item.get("comment_count")) or 0)
+
+        url = item.get("url") or item.get("permalink") or ""
+        is_video = (
+            bool(item.get("videoDetails")) or "/reel/" in url or "/watch" in url
+            or "/videos/" in url or str(item.get("media_type") or "").lower() == "video"
+        )
+        if is_video:
+            avail["video_items"] += 1
+        elif item.get("image") or item.get("images"):
+            avail["image_items"] += 1
+
+        for comment in item.get("topComments") or []:
+            author = (comment or {}).get("author") or {}
+            if author.get("gender"):
+                avail["gendered_commenters"] += 1
+
+    if reactions:
+        from statistics import median
+        avail["median_reactions"] = median(reactions)
+
+    avail["has_engagement"] = avail["engagement_items"] > 0
+    avail["has_media"] = (avail["video_items"] + avail["image_items"]) > 0
+    avail["has_demographics"] = avail["gendered_commenters"] >= MIN_DEMOGRAPHIC_SAMPLE
+    avail["has_network"] = bool(
+        profile_data.get("followers_sample") or profile_data.get("following_sample")
+    )
+    avail["has_groups"] = bool(profile_data.get("groups"))
+    return avail
+
+
+def _boundary_text(avail: Dict[str, Any]) -> str:
+    """Render DATA BOUNDARIES from the data actually present."""
+    lines = ["DATA BOUNDARIES - grounds every claim you may make:"]
+
+    if avail["has_engagement"]:
+        lines.append(
+            f"- ENGAGEMENT: collected for {avail['engagement_items']} of {avail['n_items']} items "
+            f"(total {avail['reactions']} reactions, {avail['shares']} shares, "
+            f"{avail['comments']} comments; median {avail['median_reactions']} reactions/item). "
+            "You MAY quantify engagement using exactly these numbers - nothing wider."
+        )
+    else:
+        lines.append(
+            "- ENGAGEMENT: no reaction/share/comment metrics were collected. Do NOT state "
+            "engagement levels, 'near-zero engagement', reach or shadow suppression."
+        )
+
+    if avail["has_media"]:
+        lines.append(
+            f"- MEDIA: {avail['video_items']} video/reel item(s) and {avail['image_items']} "
+            "image item(s) were collected. Do NOT claim the account posts no video or no images."
+        )
+    else:
+        lines.append(
+            "- MEDIA: no media-type metadata was collected. Absence in samples is NOT evidence "
+            "of absence on the account - do not state 'no video/Reels', 'zero multimedia' or "
+            "'live streams unused' as fact."
+        )
+
+    if avail["has_demographics"]:
+        lines.append(
+            f"- AUDIENCE: gender is stated for {avail['gendered_commenters']} comment authors. "
+            "You MAY describe that sample, stating its size."
+        )
+    else:
+        lines.append(
+            f"- AUDIENCE: only {avail['gendered_commenters']} comment author(s) carry demographic "
+            f"data (minimum for any composition claim is {MIN_DEMOGRAPHIC_SAMPLE}). Do NOT "
+            "generalize audience gender, age or location ('male-dominated', 'educated urban')."
+        )
+
+    if not avail["has_network"]:
+        lines.append(
+            "- NETWORK: no follower/following lists were collected. Do NOT claim coordinated "
+            "behavior, bot networks, follow-for-follow or purchased followers - and do not raise "
+            "risk merely because of the account's topical niche."
+        )
+    if not avail["has_groups"]:
+        lines.append("- GROUPS: no group membership data was collected. Never claim group absence or presence.")
+
+    return "\n".join(lines)
 
 # Platform-specific context and terminology
 PLATFORM_CONTEXTS = {
@@ -277,13 +412,9 @@ def build_content_analysis_prompt(platform: str, profile_data: Dict[str, Any], p
     _num = lambda v: f"{v:,}" if v else "unknown (not exposed by provider)"
     _verified = profile_data.get('verified')
     _verified_str = 'Yes' if _verified else ('No' if _verified is False else 'unknown (not exposed by provider)')
-    _has_media = any(
-        str(p.get('media_type') or '').lower() not in ('', 'unknown')
-        for p in (posts or []) if isinstance(p, dict)
-    )
-    _has_engagement = any(
-        (p.get('likes') or p.get('reactions') or p.get('shares') or 0) for p in (posts or []) if isinstance(p, dict)
-    )
+    # Computed from the samples: never assert a data stream is absent when the
+    # provider did return it (Facebook deep items carry reactions/media).
+    boundaries = _boundary_text(_content_availability(posts, profile_data))
     profile_summary = f"""
 Profile: @{profile_data.get('username', 'unknown')}
 Name: {profile_data.get('display_name', 'N/A')}
@@ -293,11 +424,7 @@ Following: {_num(profile_data.get('following_count'))}
 Content Count: {_num(profile_data.get('posts_count'))}
 Verified: {_verified_str}
 Platform: {ctx['name']}
-DATA BOUNDARIES - what this dataset does NOT contain:
-- {'NO media-type metadata exists in these samples (every item media_type=unknown).' if not _has_media else 'Some samples carry media metadata.'} Absence of media in these samples is NOT evidence of absence on the account. Do not state 'no video/Reels/Live usage' or 'zero multimedia' as fact.
-- {'NO engagement metrics (likes/shares/reactions) were collected for these samples.' if not _has_engagement else 'Engagement metrics are included per sample.'} Do not state engagement levels, 'near-zero engagement', 'shadow-reach', 'algorithmic suppression', or reach claims - we did not measure them.
-- No group membership/participation data exists in this dataset at all. Never claim group absence or presence.
-- No commenter demographic breakdowns exist beyond the tiny sample of collected comments (n<=5). Never generalize audience demographics ('male-dominated', 'educated urban') from a handful of comments.
+{boundaries}
 CRITICAL: Any metric marked 'unknown (not exposed by provider)' is MISSING data, not zero.
 Never treat an unknown metric or a missing data stream as evidence. Ground every claim in the profile metrics and samples above.
 """.strip()
