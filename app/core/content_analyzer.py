@@ -10,6 +10,8 @@ from typing import Dict, List, Any, Optional, Tuple
 import re
 from collections import Counter
 
+from app.utils.helpers import parse_timestamp, posting_cadence
+
 
 class ContentAnalyzer:
     """Analyzes social media content using NLP and other techniques"""
@@ -208,39 +210,31 @@ class ContentAnalyzer:
     def _calculate_posting_frequency(
         self, posts: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Calculate posting frequency metrics"""
+        """Calculate posting frequency metrics.
+
+        The rate comes from the shared helper (posts per week over the span the
+        samples cover), so this figure matches the one stored in the subject's
+        snapshot instead of being computed a second way.
+        """
         if not posts:
             return {"daily_average": 0, "weekly_average": 0, "monthly_average": 0}
 
-        # Extract dates and count posts per day
-        dates = []
-        for post in posts:
-            try:
-                date_str = post.get("created_at", "") or post.get("date", "")
-                # Parse ISO format date
-                date = datetime.datetime.strptime(date_str[:10], "%Y-%m-%d").date()
-                dates.append(date)
-            except (ValueError, TypeError):
-                # Skip posts with invalid dates
-                continue
+        raw_when = [post.get("created_at") or post.get("date") or post.get("publishTime")
+                    for post in posts if isinstance(post, dict)]
+        cadence = posting_cadence(raw_when)
 
-        if not dates:
+        dates = []
+        for value in raw_when:
+            parsed = parse_timestamp(value)
+            if parsed:
+                dates.append(parsed.date())
+
+        if not dates or cadence["posts_per_week"] is None:
             return {"daily_average": 0, "weekly_average": 0, "monthly_average": 0}
 
-        # Count posts per day
         date_counts = Counter(dates)
-
-        # Calculate date range
-        min_date = min(dates)
-        max_date = max(dates)
-        date_range = (max_date - min_date).days + 1  # Add 1 to include the last day
-
-        if date_range <= 0:
-            date_range = 1  # Avoid division by zero
-
-        # Calculate averages
-        daily_avg = len(posts) / date_range
-        weekly_avg = daily_avg * 7
+        weekly_avg = cadence["posts_per_week"]
+        daily_avg = weekly_avg / 7
         monthly_avg = daily_avg * 30
 
         # Find most active days

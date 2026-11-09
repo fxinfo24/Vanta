@@ -889,6 +889,18 @@ def _with_history(task, payload):
         except Exception:
             delta["elapsed_hours"] = None
         out["changes"] = delta
+
+        # Threshold alerts are computed from the same two snapshots, so they can
+        # always be reproduced by hand from the stored numbers.
+        try:
+            out["alerts"] = DossierSnapshot.compute_alerts(
+                current.snapshot_data, previous.snapshot_data,
+                elapsed_hours=delta.get("elapsed_hours"),
+            )
+        except Exception as e:
+            logger.error(f"Alert evaluation failed for task {task.id}: {e}", exc_info=True)
+            out["alerts"] = {"alerts": [], "not_evaluated": [
+                {"rule": "all", "reason": "alert evaluation failed; see server logs"}]}
     return out
 
 

@@ -1046,18 +1046,23 @@ class ScrapeCreatorsClient:
         """Get Facebook reels for a user (real endpoint: /profile/reels, param `url`, paginated)"""
         endpoint = "v1/facebook/profile/reels"
         try:
-            reels, cursor = [], None
+            reels, cursor, next_page = [], None, None
             for _ in range(7):  # max 7 pages (=count cap) to bound credit use
                 params = {"url": self._fb_url(username)}
+                # The API rejects a page-2 request that carries `cursor` without
+                # `next_page_id` (400 missing_parameter), so send both or neither.
                 if cursor:
                     params["cursor"] = cursor
+                if next_page:
+                    params["next_page_id"] = next_page
                 response = self._make_request("GET", endpoint, params=params)
                 batch = response.get("reels", [])
                 if not batch:
                     break
                 reels.extend(batch)
-                cursor = response.get("cursor") or response.get("next_page_id")
-                if not cursor or len(reels) >= count:
+                cursor = response.get("cursor")
+                next_page = response.get("next_page_id")
+                if not (cursor and next_page) or len(reels) >= count:
                     break
             return reels[:count]
         except Exception as e:

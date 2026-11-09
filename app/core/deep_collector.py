@@ -5,7 +5,8 @@ Supports Quick Scan (10s) and Deep Dossier (2-5 min) analysis modes.
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+import re
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -13,6 +14,63 @@ import time
 from .scrape_client import ScrapeCreatorsClient, get_scrape_client, ScrapeCreatorsError
 
 logger = logging.getLogger(__name__)
+
+
+def content_key(item: Dict[str, Any]) -> str:
+    """One stable identity per content item across feed endpoints.
+
+    The same reel is served by the posts feed as a post id and by the reels
+    feed as an opaque encoded id, so ids cannot be compared directly: the
+    canonical URL can. Doubled items inflate `posts_measured`, which is the
+    denominator of the engagement rate, and make the comments step pay twice
+    for the same post.
+    """
+    if not isinstance(item, dict):
+        return ""
+    url = str(item.get("url") or item.get("permalink") or item.get("post_url") or "").strip()
+    if url:
+        no_query = url.split("?", 1)[0].rstrip("/")
+        if no_query:
+            return no_query.lower()
+    for field in ("id", "post_id", "video_id", "shortcode"):
+        value = item.get(field)
+        if value:
+            return f"id:{value}"
+    return ""
+
+
+def _richness(item: Dict[str, Any]) -> int:
+    """How much usable data an item carries; richer duplicates are kept."""
+    if not isinstance(item, dict):
+        return 0
+    score = 0
+    for field in ("reactionCount", "reaction_count", "commentCount", "comment_count",
+                  "share_count", "shares", "view_count", "videoDetails", "image"):
+        if item.get(field) not in (None, "", [], {}):
+            score += 1
+    text = item.get("text") or item.get("message") or item.get("caption") or ""
+    if isinstance(text, str) and text.strip():
+        score += 1
+    return score
+
+
+def dedupe_content(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+    """Drop repeated items, keeping the richest copy. Returns (items, removed)."""
+    kept, index, removed = [], {}, 0
+    for item in items or []:
+        key = content_key(item)
+        if not key:
+            kept.append(item)
+            continue
+        if key not in index:
+            index[key] = len(kept)
+            kept.append(item)
+            continue
+        removed += 1
+        position = index[key]
+        if _richness(item) > _richness(kept[position]):
+            kept[position] = item
+    return kept, removed
 
 
 class DeepDossierCollector:
@@ -472,8 +530,11 @@ class DeepDossierCollector:
                     elif data_key == 'demographics':
                         result['demographics'] = data
                     elif data_key in ['videos', 'posts', 'reels', 'tweets', 'shorts']:
+                        # Collect first, dedupe afterwards: the posts and reels
+                        # feeds overlap, and truncating per call would let
+                        # duplicates occupy slots that unique items should fill.
                         if isinstance(data, list):
-                            result['content'].extend(data[:max_content_items - len(result['content'])])
+                            result['content'].extend(data)
                     else:
                         result['additional_data'][data_key] = data
                     
@@ -483,14 +544,31 @@ class DeepDossierCollector:
                 result['errors'].append(f"{data_key} error: {str(e)}")
                 logger.warning(f"Failed to get {data_key} for {username}: {e}")
         
+        # Merge the per-endpoint feeds into one unique set before anything is
+        # measured or paid for again (comments, transcripts).
+        if result['content']:
+            before = len(result['content'])
+            result['content'], duplicates = dedupe_content(result['content'])
+            result['statistics']['duplicate_items_removed'] = duplicates
+            if duplicates:
+                logger.info(f"Dropped {duplicates} duplicate content item(s) across feeds "
+                            f"({before} -> {len(result['content'])})")
+            result['content'] = result['content'][:max_content_items]
+
         # 3. Get comments on content items
         if include_comments and config.get('comments_method') and result['content']:
             comments_method = getattr(self.client, config['comments_method'], None)
             if comments_method:
+                commented = set()
                 for item in result['content'][:10]:  # Limit to first 10 items
                     try:
                         item_id = item.get('id') or item.get('video_id') or item.get('post_id')
+                        # Never pay twice for the same post, even if it reached
+                        # the content list under two different id formats.
+                        if item_id and content_key(item) in commented:
+                            continue
                         if item_id:
+                            commented.add(content_key(item))
                             comments = comments_method(item_id, count=max_comments_per_item)
                             result['comments_analysis']['sample_comments'].extend(comments[:10])
                             result['comments_analysis']['total_comments_collected'] += len(comments)

@@ -295,14 +295,18 @@ const _delta = (v: any, suffix = '') => {
 const HistoryPanel = ({ results }: { results: AnalysisResult }) => {
   const history = (results as any).history;
   const changes = (results as any).changes;
+  const alertReport = (results as any).alerts;
   if (!history || !history.count || history.count < 2) return null;
 
   const rows: Array<[string, any]> = [
     ['Followers', changes?.followers],
     ['Engagement rate', changes?.engagement_rate_percent],
+    ['Posts / week', changes?.posts_per_week],
     ['Bot likelihood', changes?.bot_likelihood],
     ['Trust score', changes?.trust_score],
   ];
+  const alerts: any[] = alertReport?.alerts || [];
+  const skipped: any[] = alertReport?.not_evaluated || [];
 
   return (
     <div className="glass-card p-6 rounded-2xl md:col-span-3">
@@ -386,6 +390,33 @@ const HistoryPanel = ({ results }: { results: AnalysisResult }) => {
             <div className="text-white/60">
               Posts: {changes.content.new_count} new · {changes.content.removed_count} no longer present ·{' '}
               {changes.content.retained_count} retained
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Threshold alerts: every one names the rule and both numbers, so the
+          reader can recompute it from the same snapshot. */}
+      {(alerts.length > 0 || skipped.length > 0) && (
+        <div className="mt-5 border-t border-white/10 pt-4">
+          <div className="text-[11px] uppercase tracking-wider text-white/40 mb-2">
+            Alerts {alerts.length > 0 ? `· ${alerts.length}` : '· none triggered'}
+          </div>
+          {alerts.map((a: any, i: number) => (
+            <div key={i} className="flex items-start gap-2 text-xs mb-1.5">
+              <span className={
+                a.severity === 'critical' ? 'px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-200 shrink-0'
+                : a.severity === 'warning' ? 'px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200 shrink-0'
+                : 'px-1.5 py-0.5 rounded bg-white/10 text-white/60 shrink-0'
+              }>{a.severity}</span>
+              <span className="text-white/80">
+                {a.message} <span className="text-white/35">({a.basis})</span>
+              </span>
+            </div>
+          ))}
+          {skipped.length > 0 && (
+            <div className="text-[11px] text-white/35 mt-2">
+              Not evaluated: {skipped.map((s: any) => `${s.rule} — ${s.reason}`).join('; ')}
             </div>
           )}
         </div>

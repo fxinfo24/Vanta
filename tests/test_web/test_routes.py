@@ -844,3 +844,71 @@ def test_forgot_password_says_so_when_email_is_not_configured(app, monkeypatch):
         from app.web.models import db
         from app.web.models.user import PasswordResetToken
         assert db.session.query(PasswordResetToken).count() == 0
+
+
+def test_alerts_fire_on_arithmetic_changes():
+    """Every alert is recomputable from the two stored snapshots."""
+    from app.web.models.dossier import DossierSnapshot
+
+    previous = {"followers": 2000, "engagement_rate_percent": 2.0, "posts_measured": 40,
+                "bot_likelihood": 0.15, "posts_per_week": 10.0,
+                "post_ids": [str(i) for i in range(40)]}
+    current = {"followers": 1700, "engagement_rate_percent": 1.0, "posts_measured": 40,
+               "bot_likelihood": 0.62, "posts_per_week": 4.0,
+               "post_ids": [str(i) for i in range(10, 43)]}
+
+    report = DossierSnapshot.compute_alerts(current, previous, elapsed_hours=24)
+    rules = {a["rule"]: a for a in report["alerts"]}
+
+    assert rules["followers_drop"]["severity"] == "critical"   # -15%
+    assert rules["bot_likelihood_jump"]["severity"] == "critical"
+    assert rules["engagement_drop"]["current"] == 1.0
+    assert rules["cadence_drop"]["previous"] == 10.0
+    assert rules["content_removed"]["current"] == 10
+
+
+def test_alerts_report_not_evaluated_instead_of_passing():
+    """A rule whose inputs are missing must say so, not stay silent."""
+    from app.web.models.dossier import DossierSnapshot
+
+    report = DossierSnapshot.compute_alerts(
+        {"followers": 100}, {"followers": 100, "posts_measured": 3},
+    )
+    skipped = {s["rule"] for s in report["not_evaluated"]}
+    assert {"engagement_drop", "cadence_drop", "bot_likelihood_jump"} <= skipped
+    assert report["alerts"] == []
+
+
+def test_content_dedupe_keeps_richest_copy():
+    """The same reel served by two feeds must count once."""
+    from app.core.deep_collector import dedupe_content
+
+    items = [
+        {"url": "https://www.facebook.com/reel/1098819196465362/",
+         "id": "29952502891017569", "reactionCount": 12, "commentCount": 3},
+        {"url": "https://www.facebook.com/reel/1098819196465362", "id": "UzpfSTEwMDA="},
+        {"url": "https://www.facebook.com/AzizMdArif/posts/pfbid0e9p", "id": "29822216854046174"},
+    ]
+    kept, removed = dedupe_content(items)
+
+    assert removed == 1 and len(kept) == 2
+    assert kept[0]["reactionCount"] == 12  # the copy carrying engagement survived
+
+
+def test_engagement_and_cadence_share_one_implementation():
+    """The prompt, the dossier and the snapshot must not compute it three ways."""
+    from app.core.openrouter_client import _engagement_rate_percent
+    from app.core.content_analyzer import ContentAnalyzer
+    from app.web.models.dossier import DossierSnapshot
+
+    posts = [{"created_at": "2026-11-01T10:00:00Z"}, {"created_at": "2026-11-08T10:00:00Z"},
+             {"created_at": "2026-11-09T10:00:00Z"}]
+    analyzer = ContentAnalyzer(sentiment_analyzer=False)
+    frequency = analyzer._calculate_posting_frequency(posts)
+    snapshot = DossierSnapshot.metrics_from_result({"raw_dossier": {"content": posts}})
+
+    assert frequency["weekly_average"] == snapshot["posts_per_week"] == 2.62
+    assert _engagement_rate_percent(
+        {"engagement_items": 4, "reactions": 40, "comments": 10, "shares": 2},
+        {"followers_count": 2061},
+    ) == 0.631

@@ -7,6 +7,38 @@ from datetime import datetime, timedelta
 from . import db
 import json
 
+
+from app.utils.helpers import parse_timestamp as _parse_when
+from app.utils.helpers import engagement_rate_percent, posting_cadence
+
+
+# Thresholds for alerts raised on a run-to-run change. Every rule is arithmetic
+# over stored snapshots, so an alert can always be recomputed and checked.
+DEFAULT_ALERT_THRESHOLDS = {
+    "followers_drop_percent": 3.0,
+    "followers_drop_critical_percent": 10.0,
+    "bot_likelihood_jump": 0.2,
+    "bot_likelihood_critical_at": 0.5,
+    "engagement_drop_percent": 30.0,
+    "min_posts_for_engagement": 5,
+    "cadence_drop_percent": 50.0,
+    "posts_removed_count": 3,
+}
+
+
+def alert_thresholds():
+    """Configured thresholds merged over the defaults (config `alerts` block)."""
+    thresholds = dict(DEFAULT_ALERT_THRESHOLDS)
+    try:
+        from app.utils.config import load_config
+        configured = (load_config() or {}).get("alerts") or {}
+        for key, value in configured.items():
+            if key in thresholds and isinstance(value, (int, float)):
+                thresholds[key] = float(value)
+    except Exception:
+        pass
+    return thresholds
+
 class DossierSnapshot(db.Model):
     """
     Stores point-in-time snapshots of collected data.
@@ -100,12 +132,18 @@ class DossierSnapshot(db.Model):
                 comments += int(item.get("commentCount", item.get("comment_count")) or 0)
                 shares += int(item.get("share_count", item.get("shares")) or 0)
 
+        # Posting cadence in Python, not in prose: posts per week across the
+        # window the samples actually cover. Two runs that phrase cadence
+        # differently cannot disagree if the number is computed once here.
+        cadence = posting_cadence(published)
+        posts_per_week = cadence["posts_per_week"]
+
         followers = DossierSnapshot._num(profile.get("followers") or profile.get("follower_count"))
         # Older runs predate `engagement_metrics`; derive the same number from
         # the stored samples so their snapshots stay comparable.
         rate = DossierSnapshot._num(evidence.get("rate_percent"))
-        if rate is None and measured and followers:
-            rate = round(100.0 * ((reactions + comments + shares) / measured) / float(followers), 3)
+        if rate is None and measured:
+            rate = engagement_rate_percent(followers, reactions + comments + shares, measured)
             evidence = {"rate_percent": rate, "posts_measured": measured,
                         "reactions": reactions, "comments": comments, "shares": shares}
 
@@ -130,6 +168,9 @@ class DossierSnapshot(db.Model):
                 "earliest": min(published) if published else None,
                 "latest": max(published) if published else None,
             },
+            "posts_per_week": posts_per_week,
+            "cadence_span_days": cadence["span_days"],
+            "dated_posts": cadence["posts"],
             "risk_assessment": auth.get("risk_assessment"),
             "bot_likelihood": DossierSnapshot._num(auth.get("bot_likelihood")),
             "trust_score": DossierSnapshot._num((auth.get("overall_authenticity") or {}).get("score")),
@@ -148,6 +189,133 @@ class DossierSnapshot(db.Model):
             or metrics.get("bio")
             or metrics.get("post_ids")
         )
+
+    @staticmethod
+    def compute_alerts(current: dict, previous: dict, elapsed_hours=None, thresholds=None) -> dict:
+        """Threshold alerts for one run-to-run change.
+
+        Deterministic: every alert names the metric, both values and the rule
+        that fired, so a customer can reproduce it. Rules whose inputs were not
+        collected are reported as not evaluated instead of silently passing.
+        """
+        cur, prev = current or {}, previous or {}
+        th = thresholds or alert_thresholds()
+        alerts, skipped = [], []
+
+        def add(rule, severity, message, metric, previous_value, current_value, basis):
+            alerts.append({
+                "rule": rule,
+                "severity": severity,
+                "message": message,
+                "metric": metric,
+                "previous": previous_value,
+                "current": current_value,
+                "basis": basis,
+            })
+
+        # 1. Followers
+        f_prev, f_cur = DossierSnapshot._num(prev.get("followers")), DossierSnapshot._num(cur.get("followers"))
+        if f_prev and f_cur is not None:
+            pct = 100.0 * (f_cur - f_prev) / f_prev
+            if pct <= -th["followers_drop_critical_percent"]:
+                add("followers_drop", "critical",
+                    f"Follower count fell {abs(pct):.1f}% ({int(f_prev)} to {int(f_cur)}).",
+                    "followers", f_prev, f_cur,
+                    f"drop >= {th['followers_drop_critical_percent']}% threshold")
+            elif pct <= -th["followers_drop_percent"]:
+                add("followers_drop", "warning",
+                    f"Follower count fell {abs(pct):.1f}% ({int(f_prev)} to {int(f_cur)}).",
+                    "followers", f_prev, f_cur,
+                    f"drop >= {th['followers_drop_percent']}% threshold")
+        else:
+            skipped.append({"rule": "followers_drop", "reason": "follower count missing in one of the runs"})
+
+        # 2. Bot likelihood / authenticity risk
+        b_prev, b_cur = DossierSnapshot._num(prev.get("bot_likelihood")), DossierSnapshot._num(cur.get("bot_likelihood"))
+        if b_prev is not None and b_cur is not None:
+            jump = b_cur - b_prev
+            if jump >= th["bot_likelihood_jump"] or (
+                b_cur >= th["bot_likelihood_critical_at"] and b_prev < th["bot_likelihood_critical_at"]
+            ):
+                severity = "critical" if b_cur >= th["bot_likelihood_critical_at"] else "warning"
+                add("bot_likelihood_jump", severity,
+                    f"Bot likelihood rose from {b_prev:.2f} to {b_cur:.2f}"
+                    + (" and crossed the high-risk line." if severity == "critical" else "."),
+                    "bot_likelihood", b_prev, b_cur,
+                    f"jump >= {th['bot_likelihood_jump']} or crossing {th['bot_likelihood_critical_at']}")
+        else:
+            skipped.append({"rule": "bot_likelihood_jump",
+                            "reason": "authenticity was not assessed in one of the runs"})
+
+        # 3. Engagement rate — only meaningful when both runs measured enough posts
+        e_prev, e_cur = (DossierSnapshot._num(prev.get("engagement_rate_percent")),
+                         DossierSnapshot._num(cur.get("engagement_rate_percent")))
+        n_prev = DossierSnapshot._num(prev.get("posts_measured")) or 0
+        n_cur = DossierSnapshot._num(cur.get("posts_measured")) or 0
+        minimum = th["min_posts_for_engagement"]
+        if e_prev and e_cur is not None and n_prev >= minimum and n_cur >= minimum:
+            pct = 100.0 * (e_cur - e_prev) / e_prev
+            if pct <= -th["engagement_drop_percent"]:
+                add("engagement_drop", "warning",
+                    f"Engagement rate fell {abs(pct):.1f}% ({e_prev}% to {e_cur}%).",
+                    "engagement_rate_percent", e_prev, e_cur,
+                    f"drop >= {th['engagement_drop_percent']}% over {int(n_cur)} measured posts")
+        else:
+            skipped.append({
+                "rule": "engagement_drop",
+                "reason": f"needs engagement on both runs with >= {minimum} measured posts "
+                          f"(had {int(n_prev)} then {int(n_cur)})",
+            })
+
+        # 4. Posting cadence (posts per week over each run's own window)
+        c_prev = DossierSnapshot._num(prev.get("posts_per_week"))
+        c_cur = DossierSnapshot._num(cur.get("posts_per_week"))
+        if c_prev and c_cur is not None:
+            pct = 100.0 * (c_cur - c_prev) / c_prev
+            if pct <= -th["cadence_drop_percent"]:
+                add("cadence_drop", "warning",
+                    f"Posting cadence fell {abs(pct):.1f}% ({c_prev}/week to {c_cur}/week).",
+                    "posts_per_week", c_prev, c_cur,
+                    f"drop >= {th['cadence_drop_percent']}% threshold")
+        else:
+            skipped.append({"rule": "cadence_drop",
+                            "reason": "fewer than two dated posts in one of the runs"})
+
+        # 5. Removed content — only when both runs saw a comparable post set
+        delta = DossierSnapshot.compute_delta(cur, prev)
+        content = delta.get("content") or {}
+        if content.get("comparable"):
+            removed = content.get("removed_count") or 0
+            if removed >= th["posts_removed_count"]:
+                add("content_removed", "warning",
+                    f"{removed} previously collected post(s) are no longer present.",
+                    "removed_posts", None, removed,
+                    f"removed >= {th['posts_removed_count']} with comparable coverage "
+                    f"({content.get('coverage_ratio')} of the earlier set)")
+        else:
+            skipped.append({"rule": "content_removed",
+                            "reason": content.get("coverage_note") or "post sets not comparable"})
+
+        # 6. Identity changes
+        profile = delta.get("profile") or {}
+        if profile.get("display_name_changed"):
+            add("display_name_changed", "info",
+                f"Display name changed from {prev.get('display_name')!r} to {cur.get('display_name')!r}.",
+                "display_name", prev.get("display_name"), cur.get("display_name"), "exact comparison")
+        if profile.get("verified_changed"):
+            add("verified_status_changed", "warning",
+                f"Verified badge {'lost' if prev.get('verified') else 'gained'}.",
+                "verified", bool(prev.get("verified")), bool(cur.get("verified")), "exact comparison")
+        if profile.get("bio_changed"):
+            add("bio_changed", "info", "Profile bio text changed.",
+                "bio", None, None, "exact comparison")
+
+        return {
+            "alerts": alerts,
+            "not_evaluated": skipped,
+            "thresholds": {k: th[k] for k in sorted(th)},
+            "elapsed_hours": elapsed_hours,
+        }
 
     @classmethod
     def build(cls, task_id, platform, username, result, collection_mode=None):
@@ -210,6 +378,7 @@ class DossierSnapshot(db.Model):
         return {
             "followers": move("followers"),
             "engagement_rate_percent": move("engagement_rate_percent"),
+            "posts_per_week": move("posts_per_week"),
             "posts_measured": move("posts_measured"),
             "bot_likelihood": move("bot_likelihood"),
             "trust_score": move("trust_score"),

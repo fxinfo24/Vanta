@@ -260,12 +260,18 @@ _PERCENT_TOLERANCE = 0.6  # relative, generous: rounding and phrasing vary
 
 
 def _engagement_rate_percent(avail: Dict[str, Any], profile_data: Dict[str, Any]) -> Optional[float]:
-    """Mean (reactions+comments+shares) per post as a share of followers."""
+    """Mean (reactions+comments+shares) per post as a share of followers.
+
+    Delegates to the shared helper so the number in the prompt, the number in
+    the dossier and the number stored in a snapshot cannot drift apart.
+    """
+    from app.utils.helpers import engagement_rate_percent
+
     followers = profile_data.get("followers_count") or profile_data.get("follower_count")
-    if not followers or not avail.get("engagement_items"):
+    if not avail.get("engagement_items"):
         return None
     total = avail["reactions"] + avail["shares"] + avail["comments"]
-    return round(100.0 * (total / avail["engagement_items"]) / float(followers), 3)
+    return engagement_rate_percent(followers, total, avail["engagement_items"])
 
 
 def _split_indicators(flags: Any) -> tuple:
