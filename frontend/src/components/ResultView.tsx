@@ -247,12 +247,40 @@ const OverviewTab = ({ results }: { results: AnalysisResult; task: any }) => (
         <StatBox label="Bot Probability" value={typeof results.authenticity?.bot_likelihood === 'number' ? `${Math.round(results.authenticity.bot_likelihood * 100)}%` : 'Unknown'} />
         <StatBox label="Trust Score" value={typeof results.authenticity?.overall_authenticity?.score === 'number' ? `${Math.round(results.authenticity.overall_authenticity.score * 100)}%` : 'Unknown'} />
       </div>
+      {(results.authenticity?.engagement_metrics || results.authenticity?.risk_basis) && (
+        <div className="text-[11px] text-white/40 mt-3 space-y-1">
+          {results.authenticity?.engagement_metrics && (
+            <div>
+              Measured engagement {results.authenticity.engagement_metrics.rate_percent}% —{' '}
+              {results.authenticity.engagement_metrics.reactions} reactions +{' '}
+              {results.authenticity.engagement_metrics.comments} comments +{' '}
+              {results.authenticity.engagement_metrics.shares} shares over{' '}
+              {results.authenticity.engagement_metrics.posts_measured} posts ÷{' '}
+              {results.authenticity.engagement_metrics.followers?.toLocaleString?.() ?? results.authenticity.engagement_metrics.followers} followers
+            </div>
+          )}
+          {results.authenticity?.risk_basis && <div>Risk basis: {results.authenticity.risk_basis}</div>}
+        </div>
+      )}
       <div className="mt-6 space-y-2">
         {results.authenticity?.red_flags?.map((flag: string, i: number) => (
           <div key={i} className="flex items-center gap-2 text-red-200 bg-red-500/10 p-2 rounded">
             <span className="w-1.5 h-1.5 rounded-full bg-red-400"></span> {flag}
           </div>
         ))}
+        {(results.authenticity?.data_gaps || []).length > 0 && (
+          <div className="mt-3">
+            <div className="text-[11px] uppercase tracking-wider text-white/40 mb-1">
+              Data gaps — missing inputs, not evidence of risk
+            </div>
+            {(results.authenticity.data_gaps as string[]).map((gap, i) => (
+              <div key={`gap-${i}`} className="flex items-start gap-2 text-amber-200/80 bg-amber-500/5 p-2 rounded mb-1">
+                <span className="w-1.5 h-1.5 mt-2 shrink-0 rounded-full bg-amber-300/70"></span>
+                <span>{gap}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {results.authenticity?.limitations?.map((note: string, i: number) => (
           <div key={`lim-${i}`} className="flex items-start gap-2 text-slate-300 bg-slate-500/10 p-2 rounded">
             <span className="w-1.5 h-1.5 mt-2 shrink-0 rounded-full bg-slate-400"></span> <span>{note}</span>

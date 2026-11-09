@@ -140,8 +140,8 @@ def _validate_topical_focus(result: Dict[str, Any], content_items: Optional[List
         if not isinstance(limitations, list):
             limitations = [limitations] if limitations else []
         limitations.append(
-            f"{len(dropped)} topical quote(s) were removed because they do not appear "
-            "verbatim in the collected posts."
+            f"{len(dropped)} suggested quote(s) were rejected because they do not appear "
+            "in the collected posts."
         )
         result["limitations"] = limitations
 
@@ -190,14 +190,41 @@ def _filter_unbacked_flags(flags: Any, avail: Dict[str, Any]) -> tuple:
     return kept, dropped, reasons
 
 
-def _apply_flag_grounding(result: Dict[str, Any], avail: Dict[str, Any]) -> Dict[str, Any]:
-    """Filter indicators and record any removal in ``limitations``."""
+def _apply_flag_grounding(result: Dict[str, Any], avail: Dict[str, Any],
+                          profile_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Filter indicators, split out data gaps, and record every removal."""
     if not isinstance(result, dict) or "error" in result:
         return result
     dropped_all: List[str] = []
     reasons: set = set()
+    expected_rate = _engagement_rate_percent(avail, profile_data or {})
+
     for key in ("red_flags", "green_flags"):
         kept, dropped, why = _filter_unbacked_flags(result.get(key), avail)
+
+        # Drop any percentage that does not match the arithmetic over the
+        # samples - a precise-looking number that cannot be reproduced is an
+        # invented number, whatever the surrounding sentence says.
+        if expected_rate is not None:
+            checked = []
+            for flag in kept:
+                text = flag if isinstance(flag, str) else json.dumps(flag, ensure_ascii=False)
+                claimed = [float(m) for m in _PERCENT_RE.findall(text)]
+                implausible = [
+                    c for c in claimed
+                    if abs(c - expected_rate) > _PERCENT_TOLERANCE * max(expected_rate, 0.01)
+                ]
+                if implausible and re.search(r"\bengagement\b", text, re.IGNORECASE):
+                    dropped.append(flag)
+                    why = why | {"an engagement rate that the numbers do not reproduce"}
+                else:
+                    checked.append(flag)
+            kept = checked
+
+        if key == "red_flags":
+            kept, gaps = _split_indicators(kept)
+            if gaps:
+                result["data_gaps"] = gaps
         if key in result or kept:
             result[key] = kept
         dropped_all.extend(dropped)
@@ -208,8 +235,76 @@ def _apply_flag_grounding(result: Dict[str, Any], avail: Dict[str, Any]) -> Dict
         if not isinstance(limitations, list):
             limitations = [limitations] if limitations else []
         limitations.append(
-            f"{len(dropped_all)} indicator(s) were discarded: they relied on "
-            f"{'; '.join(sorted(reasons))}."
+            f"{len(dropped_all)} indicator(s) removed: not supported by the collected data "
+            f"({'; '.join(sorted(reasons))})."
+        )
+        result["limitations"] = limitations
+    return result
+
+
+# Statements about data that was not returned are gaps in the collection, not
+# evidence of inauthenticity. Reporting them as red flags inflates the risk
+# picture (three of six "flags" on a real run were just missing metrics).
+_DATA_GAP_RE = re.compile(
+    r"\bunknown\b|\bnot\s+(?:available|exposed|collected|provided|reported)\b"
+    r"|\bcannot\s+(?:verify|assess|calculate|determine|confirm)\b"
+    r"|\blimited\s+sample\b|\binsufficient\s+(?:data|sample)\b|\bsample\s+size\b",
+    re.IGNORECASE,
+)
+
+# Observing few reactions is only meaningful next to the follower base. When the
+# claimed percentage does not match the arithmetic over the samples, the figure
+# was guessed - so it goes.
+_PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_PERCENT_TOLERANCE = 0.6  # relative, generous: rounding and phrasing vary
+
+
+def _engagement_rate_percent(avail: Dict[str, Any], profile_data: Dict[str, Any]) -> Optional[float]:
+    """Mean (reactions+comments+shares) per post as a share of followers."""
+    followers = profile_data.get("followers_count") or profile_data.get("follower_count")
+    if not followers or not avail.get("engagement_items"):
+        return None
+    total = avail["reactions"] + avail["shares"] + avail["comments"]
+    return round(100.0 * (total / avail["engagement_items"]) / float(followers), 3)
+
+
+def _split_indicators(flags: Any) -> tuple:
+    """Separate evidence-based indicators from collection gaps.
+
+    Returns ``(evidence, gaps)``. A flag that only says a metric was not
+    returned ("account age unknown") belongs in gaps.
+    """
+    evidence, gaps = [], []
+    for flag in flags or []:
+        text = flag if isinstance(flag, str) else json.dumps(flag, ensure_ascii=False)
+        (gaps if _DATA_GAP_RE.search(text) else evidence).append(flag)
+    return evidence, gaps
+
+
+def _align_risk(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep the risk label consistent with the bot probability it reports.
+
+    A run reporting 15% bot likelihood and "medium" risk is contradicting
+    itself; the label is lowered to the band its own number implies, and the
+    change is stated rather than applied silently.
+    """
+    likelihood = result.get("bot_likelihood")
+    label = str(result.get("risk_assessment") or "").lower()
+    if not isinstance(likelihood, (int, float)) or label not in ("low", "medium", "high", "critical"):
+        return result
+
+    band = ("low" if likelihood < 0.2 else "medium" if likelihood < 0.45
+            else "high" if likelihood < 0.7 else "critical")
+    order = ["low", "medium", "high", "critical"]
+    if order.index(label) > order.index(band):
+        result["risk_assessment"] = band
+        result["risk_basis"] = f"lowest label consistent with {round(likelihood * 100)}% bot likelihood"
+        limitations = result.get("limitations")
+        if not isinstance(limitations, list):
+            limitations = [limitations] if limitations else []
+        limitations.append(
+            f"Risk lowered from '{label}' to '{band}': no indicator supported the higher "
+            f"label beyond missing data."
         )
         result["limitations"] = limitations
     return result
@@ -677,8 +772,19 @@ but only on evidence the DATASET section says was collected."""
                 max_tokens=3000,
                 label="authenticity",
             )
-            grounded = _apply_flag_grounding(result, avail)
-            return _validate_topical_focus(grounded, content_items)
+            grounded = _apply_flag_grounding(result, avail, profile_data)
+            grounded = _validate_topical_focus(grounded, content_items)
+            rate = _engagement_rate_percent(avail, profile_data)
+            if rate is not None:
+                grounded["engagement_metrics"] = {
+                    "rate_percent": rate,
+                    "posts_measured": avail["engagement_items"],
+                    "reactions": avail["reactions"],
+                    "comments": avail["comments"],
+                    "shares": avail["shares"],
+                    "followers": profile_data.get("followers_count") or profile_data.get("follower_count"),
+                }
+            return _align_risk(grounded)
 
         except (json.JSONDecodeError, ValueError) as e:
             # A 0.5 "default score" here read as a measurement. There is no

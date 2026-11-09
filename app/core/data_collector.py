@@ -83,6 +83,7 @@ class DataCollector:
         self.rate_limit = rate_limit
         self.last_request_time = 0
         self.use_mock_data = use_mock_data
+        self.provider_ready = True  # False when no real provider is configured
         self.logger = logging.getLogger(f"Vanta.DataCollector.{platform}")
         self.error_messages = []
 
@@ -96,11 +97,18 @@ class DataCollector:
             # Check specifically for the internal MockScrapeCreatorsClient, not just any "Mock" (like from unittest)
             if hasattr(self.scrape_client, "__class__") and "MockScrapeCreatorsClient" == self.scrape_client.__class__.__name__:
                 if not self.use_mock_data:
-                    self.logger.warning(f"ScrapeCreators API key missing. Using mock data for {self.platform}.")
-                    self.use_mock_data = True
+                    # No key means no collection. Silently substituting a
+                    # randomly generated profile made fabricated numbers
+                    # indistinguishable from measurements further downstream.
+                    self.provider_ready = False
+                    self.logger.error(
+                        f"No data provider configured for {self.platform} "
+                        "(ScrapeCreators key missing); collection will fail rather than "
+                        "return generated data."
+                    )
         except Exception as e:
             self.logger.error(f"Failed to initialize ScrapeCreators client: {e}")
-            self.use_mock_data = True
+            self.provider_ready = False
 
     def collect_profile_data(self, profile_id: str) -> Dict[str, Any]:
         """
@@ -115,8 +123,16 @@ class DataCollector:
         self._respect_rate_limit()
         self.logger.info(f"Collecting {self.platform} data for {profile_id}")
 
+        # Mock data only when explicitly requested (tests, local demos).
         if self.use_mock_data:
             return self._generate_mock_profile(profile_id)
+
+        if not self.provider_ready:
+            return self._collection_failed(
+                profile_id,
+                "No data provider is configured (ScrapeCreators or Apify key missing). "
+                "Nothing was collected; no analysis can be produced for this profile.",
+            )
 
         # Apify path: run actor, normalize first item as profile
         if self.data_provider == "apify":
@@ -164,7 +180,7 @@ class DataCollector:
         except Exception as e:
             self.logger.error(f"Failed to collect real data for {profile_id}: {e}")
             self.error_messages.append(str(e))
-            return self._generate_mock_profile(profile_id)
+            return self._collection_failed(profile_id, str(e))
 
     def collect_posts(self, profile_id: str, count: int = 20) -> List[Dict[str, Any]]:
         """
@@ -246,8 +262,33 @@ class DataCollector:
 
         self.last_request_time = time.time()
 
+    def _collection_failed(self, profile_id: str, reason: str) -> Dict[str, Any]:
+        """Return an explicit failure instead of a fabricated profile.
+
+        Callers (and the UI) can then say "collection failed" rather than
+        reporting invented follower counts as findings.
+        """
+        return {
+            "user_id": profile_id,
+            "username": profile_id,
+            "error": reason,
+            "collection_failed": True,
+            "is_mock_data": False,
+            "posts": [],
+            "metadata": {
+                "platform": self.platform,
+                "collection_date": datetime.utcnow().isoformat() + "Z",
+                "is_real_data": False,
+                "is_mock_data": False,
+                "api_errors": self.error_messages or [reason],
+            },
+        }
+
     def _generate_mock_profile(self, profile_id: str) -> Dict[str, Any]:
-        """Generate a universal mock profile for any platform"""
+        """Generate a universal mock profile for any platform.
+
+        Only reachable via ``use_mock_data=True`` — never as a silent fallback.
+        """
         self.logger.info(f"Generating mock {self.platform} data for {profile_id}")
         
         return {

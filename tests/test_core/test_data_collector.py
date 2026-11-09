@@ -79,16 +79,17 @@ def test_collect_twitter_data(mock_get_client, mock_scrape_client):
 
 @patch("app.core.data_collector.get_scrape_client")
 def test_collect_unsupported_platform(mock_get_client, mock_scrape_client):
-    """Test collecting data for unsupported platform falls back to mock or error"""
+    """An unsupported platform reports failure instead of inventing a profile."""
     mock_get_client.return_value = mock_scrape_client
-    
-    # We use a platform that doesn't exist on the client to trigger error/mock fallback
+
     collector = DataCollector("unsupported_platform")
-    
-    # Since collect_profile_data catches exceptions and returns mock data by default
     profile_data = collector.collect_profile_data("testuser")
-    
-    assert profile_data["metadata"].get("is_mock_data") is True
+
+    assert profile_data["collection_failed"] is True
+    assert profile_data["is_mock_data"] is False
+    assert profile_data["posts"] == []
+    # No generated metrics may masquerade as collected ones.
+    assert "follower_count" not in profile_data
 
 @patch("app.core.data_collector.get_scrape_client")
 def test_mock_data_generation(mock_get_client, mock_scrape_client):
@@ -107,8 +108,8 @@ def test_mock_data_generation(mock_get_client, mock_scrape_client):
     assert len(profile_data["posts"]) > 0
 
 @patch("app.core.data_collector.get_scrape_client")
-def test_api_error_fallback(mock_get_client, mock_scrape_client):
-    """Test fallback to mock data on API error"""
+def test_api_error_does_not_fabricate(mock_get_client, mock_scrape_client):
+    """An API error must surface as a failure, not as generated data."""
     mock_get_client.return_value = mock_scrape_client
     
     # Make API raise exception
@@ -117,5 +118,7 @@ def test_api_error_fallback(mock_get_client, mock_scrape_client):
     collector = DataCollector("twitter")
     profile_data = collector.collect_profile_data("testuser")
     
-    assert profile_data["metadata"]["is_mock_data"] is True
+    assert profile_data["collection_failed"] is True
     assert profile_data["metadata"]["api_errors"] is not None
+    assert profile_data["metadata"]["is_real_data"] is False
+    assert "follower_count" not in profile_data
