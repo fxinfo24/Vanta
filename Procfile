@@ -11,5 +11,7 @@
 #
 # Note: Using --pool=solo to avoid mmap dependency issues in containerized environments
 
-web: gunicorn -b 0.0.0.0:$PORT --workers=1 --threads=4 --timeout=120 app.web.app:create_app()
+# The app-factory target must be quoted: the shell running this line treats the
+# parentheses in create_app() as a syntax error, so the process exits immediately.
+web: gunicorn -b 0.0.0.0:$PORT --workers=1 --threads=4 --timeout=120 "app.web.app:create_app()"
 worker: celery -A app.core.tasks worker --pool=solo --loglevel=info --queues=analysis
