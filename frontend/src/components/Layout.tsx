@@ -1,16 +1,38 @@
 // Premium Glass Layout Component
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   ChartBarIcon,
   ListBulletIcon,
+  ChevronDownIcon,
+  Cog6ToothIcon,
+  ArrowRightOnRectangleIcon,
 } from '@heroicons/react/24/outline';
+import { useAuth } from '@/hooks/useAuth';
 
 const Layout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, logout } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const isActive = (path: string) => location.pathname === path;
+
+  // Close the profile menu on outside clicks
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
+  const initials = user
+    ? (user.first_name?.[0] || user.username?.[0] || user.email?.[0] || 'U').toUpperCase()
+    : 'U';
 
   return (
     <div className="min-h-screen relative overflow-hidden font-sans text-white">
@@ -70,6 +92,43 @@ const Layout: React.FC = () => {
               <div className="px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20 flex items-center space-x-2">
                 <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse shadow-[0_0_10px_#4ade80]" />
                 <span className="text-xs font-medium text-primary-200">System Online</span>
+              </div>
+              {/* Profile menu */}
+              <div className="relative" ref={menuRef}>
+                <button
+                  onClick={() => setMenuOpen((v) => !v)}
+                  className="flex items-center space-x-2 rounded-full bg-black/20 border border-white/10 pl-1 pr-2 py-1 hover:bg-white/10 transition-colors"
+                  aria-label="Profile menu"
+                >
+                  <span className="h-8 w-8 rounded-full bg-gradient-to-tr from-primary-500 to-secondary-500 flex items-center justify-center text-sm font-bold text-white">
+                    {initials}
+                  </span>
+                  <ChevronDownIcon className={`h-4 w-4 text-white/60 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {menuOpen && (
+                  <div className="absolute right-0 mt-2 w-64 glass-panel rounded-xl p-2 shadow-2xl">
+                    <div className="px-3 py-2 border-b border-white/10">
+                      <div className="text-sm font-semibold text-white truncate">
+                        {user?.first_name || user?.username || 'Account'}
+                      </div>
+                      <div className="text-xs text-white/60 truncate">{user?.email}</div>
+                    </div>
+                    <button
+                      onClick={() => { setMenuOpen(false); navigate('/settings'); }}
+                      className="mt-1 w-full flex items-center px-3 py-2 rounded-lg text-sm text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+                    >
+                      <Cog6ToothIcon className="h-4 w-4 mr-2" />
+                      Settings
+                    </button>
+                    <button
+                      onClick={() => { setMenuOpen(false); logout(); window.location.href = '/login'; }}
+                      className="w-full flex items-center px-3 py-2 rounded-lg text-sm text-red-300 hover:bg-red-500/10 hover:text-red-200 transition-colors"
+                    >
+                      <ArrowRightOnRectangleIcon className="h-4 w-4 mr-2" />
+                      Log out
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

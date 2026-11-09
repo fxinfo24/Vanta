@@ -24,6 +24,16 @@ class ApiService {
       },
     });
 
+    // Attach the JWT (if any) to every request. The backend guards all
+    // /api routes (except /health and /auth/*) with a Bearer token.
+    this.api.interceptors.request.use((config) => {
+      const token = localStorage.getItem('vanta_token');
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      return config;
+    });
+
     // Response interceptor for error handling
     this.api.interceptors.response.use(
       (response) => response,
@@ -46,11 +56,13 @@ class ApiService {
   // Task / Analysis
   async createAnalysis(request: AnalysisRequest): Promise<ApiResponse<{ task: any }>> {
     try {
-      const payload = {
+      // Omit mode unless the caller chose one: the backend applies the
+      // user's saved default mode (Settings) when it's absent.
+      const payload: Record<string, unknown> = {
         platform: request.platform,
         profile_id: request.profileId,
-        mode: request.mode || 'deep'
       };
+      if (request.mode) payload.mode = request.mode;
       const response = await this.api.post('/analyze', payload);
       return { success: true, data: response.data };
     } catch (error) {
@@ -216,6 +228,51 @@ class ApiService {
     try { const r = await this.api.post('/apify/run', payload); return { success: true, data: r.data }; } catch (e) { return this.handleError(e); }
   }
 
+  // Auth
+  async register(email: string, password: string, username?: string): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.post('/auth/register', { email, password, username });
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
+  async login(email: string, password: string): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.post('/auth/login', { email, password });
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
+  async me(): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.get('/auth/me');
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
+  async changePassword(current_password: string, new_password: string): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.post('/auth/change-password', { current_password, new_password });
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
+  // Settings + BYOK. Key material is write-only: responses carry only
+  // per-provider status (configured / source / masked hint).
+  async getSettings(): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.get('/settings');
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
+  async saveSettings(payload: any): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.put('/settings', payload);
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
   async listVerificationResults(limit?: number): Promise<ApiResponse<any>> {
     try {
       const response = await this.api.get('/verification/results', { params: { limit: limit || 20 } });
@@ -241,10 +298,8 @@ class ApiService {
   }
 
   // Utility methods
-  // Auth is not implemented in this repository's Flask API.
-  // If you deploy publicly, put auth in front of the API or add auth routes.
   isAuthenticated(): boolean {
-    return true;
+    return !!localStorage.getItem('vanta_token');
   }
 }
 

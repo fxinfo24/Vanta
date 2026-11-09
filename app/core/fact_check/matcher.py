@@ -74,10 +74,11 @@ def tfidf_cosine(text1: str, text2: str) -> float:
 class EmbeddingClient:
     """OpenRouter embeddings client (real semantic vectors, no new deps)."""
 
-    def __init__(self, model: Optional[str] = None):
+    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
         self.model = model or os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
         self.base_url = "https://openrouter.ai/api/v1/embeddings"
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
+        from app.utils.config import resolve_api_key as _resolve
+        self.api_key = api_key or _resolve("OPENROUTER_API_KEY")
         self._cache: Dict[str, List[float]] = {}
         self.available = bool(self.api_key)
         if not self.api_key:

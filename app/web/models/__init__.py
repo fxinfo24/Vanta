@@ -24,6 +24,10 @@ class Task(db.Model):
     """Analysis task model"""
 
     id = db.Column(db.Integer, primary_key=True)
+    # Owner of this analysis. Nullable so pre-auth rows remain readable;
+    # all new tasks are stamped with the authenticated user's id and every
+    # query is scoped to it (see routes/api.py).
+    user_id = db.Column(db.Integer, nullable=True, index=True)
     platform = db.Column(db.String(50), nullable=False)
     profile_id = db.Column(db.String(255), nullable=False)
     status = db.Column(db.Enum(TaskStatus), default=TaskStatus.PENDING)

@@ -33,15 +33,21 @@ class OpenRouterError(Exception):
 
 class OpenRouterClient:
     """Enhanced client for OpenRouter API - Universal LLM Access"""
-    
-    def __init__(self):
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
+
+    def __init__(self, api_key=None):
+        # Explicit key wins; otherwise resolve per-request (BYOK user key
+        # -> server env) so the module-level singleton stays safe across
+        # concurrent users. The Authorization header is refreshed in
+        # _make_request, never baked from stale state.
+        from app.utils.config import resolve_api_key
+        self._explicit_key = api_key
+        self.api_key = api_key or resolve_api_key("OPENROUTER_API_KEY")
         self.base_url = "https://openrouter.ai/api/v1"
-        
+
         if not self.api_key:
             logger.warning("OpenRouter API key not found. LLM features will be disabled.")
             self.api_key = None
-            
+
         self.session = requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {self.api_key}",
@@ -49,12 +55,12 @@ class OpenRouterClient:
             "HTTP-Referer": "https://github.com/fxinfo24/Vanta",
             "X-Title": "Vanta Social Media Analysis"
         })
-        
+
         # Available models through OpenRouter
         self.models = {
             "gpt-4": "openai/gpt-4",
             "gpt-4-turbo": "openai/gpt-4-turbo",
-            "gpt-3.5-turbo": "openai/gpt-3.5-turbo", 
+            "gpt-3.5-turbo": "openai/gpt-3.5-turbo",
             "grok-4.1-fast": "x-ai/grok-4.1-fast",  # xAI's best agentic model - 2M context
             "grok-4-fast": "x-ai/grok-4-fast",      # Multimodal with SOTA cost-efficiency
             "grok-code-fast": "x-ai/grok-code-fast-1",  # Specialized for coding
@@ -64,15 +70,26 @@ class OpenRouterClient:
             "llama-2-70b": "meta-llama/llama-2-70b-chat",
             "mixtral-8x7b": "mistralai/mixtral-8x7b-instruct"
         }
-        
-        # Default model for different analysis types
-        # Configurable via OPENROUTER_MODEL env (fallback: Nemotron 3 Ultra free,
-        # verified live 200). Grok remains available via self.models.
-        _m = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
-        self.default_models = {k: _m for k in [
+        # Default model for different analysis types; resolved per access so
+        # a user's preferred model (BYOK settings) applies to THIS request.
+        # Kept as a property (not an init-baked dict) for context safety.
+        self._model_keys = [
             "content_analysis", "personality_analysis", "authenticity_analysis",
             "sentiment_analysis", "trend_analysis", "belief_analysis",
-            "consumer_analysis", "psych", "general"]}
+            "consumer_analysis", "psych", "general"]
+
+    def _refresh_auth(self):
+        """Re-resolve the key for the current execution context."""
+        from app.utils.config import resolve_api_key
+        self.api_key = self._explicit_key or resolve_api_key("OPENROUTER_API_KEY")
+        if self.api_key:
+            self.session.headers["Authorization"] = f"Bearer {self.api_key}"
+
+    @property
+    def default_models(self):
+        from app.utils.config import resolve_openrouter_model
+        _m = resolve_openrouter_model()
+        return {k: _m for k in self._model_keys}
     
     def analyze(self, prompt: str, system_prompt: str = None, model_type: str = "general") -> Dict[str, Any]:
         """
@@ -126,6 +143,7 @@ class OpenRouterClient:
     def _make_request(self, messages: List[Dict[str, str]], model: str = None, 
                      temperature: float = 0.7, max_tokens: int = 2000) -> str:
         """Make request to OpenRouter API"""
+        self._refresh_auth()  # per-request key (BYOK context -> env)
         if not self.api_key:
              raise OpenRouterError("OpenRouter API key not configured")
 

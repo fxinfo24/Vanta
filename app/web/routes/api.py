@@ -3,16 +3,22 @@
 Vanta API Routes
 Handles API endpoints for tasks and analysis results
 """
-from flask import Blueprint, jsonify, request, current_app, send_file
+from flask import Blueprint, jsonify, request, current_app, send_file, g
 from pathlib import Path
 from datetime import datetime
 import json
 import threading
+import re
 import os
 import logging
 
 from app.core.analyzer import SocialMediaAnalyzer
 from ..models import db, Task, TaskStatus
+from ..models.user import User, UserSettings
+from ..auth import (auth_session, authenticate_user, create_access_token,
+                    create_user, get_or_create_settings, load_user_context,
+                    user_to_dict, verify_password, hash_password,
+                    AuthenticationError)
 
 logger = logging.getLogger("api")
 
@@ -20,6 +26,302 @@ logger = logging.getLogger("api")
 analyzer = SocialMediaAnalyzer()
 
 api_bp = Blueprint("api", __name__)
+
+# ---------------------------------------------------------------------------
+# Authentication + per-user scoping
+# ---------------------------------------------------------------------------
+# Every /api route requires a Bearer JWT except /health and /auth/*.
+# g.current_user is set by the guard; handlers scope all queries to
+# g.current_user.id so one user can never see another's analyses.
+
+_PUBLIC_ENDPOINTS = {"api.health_check", "api.auth_register", "api.auth_login"}
+
+
+@api_bp.before_request
+def _require_auth():
+    if request.method == "OPTIONS":
+        return None
+    if request.endpoint in _PUBLIC_ENDPOINTS:
+        return None
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return jsonify({"error": "Authentication required (Bearer token)"}), 401
+    session = auth_session()
+    try:
+        from ..auth import get_current_user
+        g.current_user = get_current_user(header[len("Bearer "):].strip(), session)
+    except AuthenticationError as e:
+        return jsonify({"error": str(e)}), 401
+    finally:
+        session.close()
+    # Install the user's BYOK keys + preferences so every client used by
+    # this (synchronous) request resolves them first. Background threads
+    # and Celery set their own context from the task's user_id.
+    from app.utils.config import set_user_context
+    g._ctx_token = set_user_context(load_user_context(g.current_user.id))
+    return None
+
+
+@api_bp.teardown_request
+def _reset_user_context(exc=None):
+    """Reset the per-user execution context after each request."""
+    token = g.pop("_ctx_token", None)
+    if token is not None:
+        from app.utils.config import reset_user_context
+        reset_user_context(token)
+
+
+def _uid():
+    """Authenticated user's id for query scoping."""
+    return g.current_user.id
+
+
+def _own_task(task_id):
+    """Fetch a task only if it belongs to the current user (404 otherwise,
+    so task existence doesn't leak across users)."""
+    task = Task.query.get(task_id)
+    if task is None or task.user_id != _uid():
+        return None
+    return task
+
+
+def _own_post(post_id):
+    """Fetch a verification post only if it belongs to the current user."""
+    from app.web.models.verification import SocialMediaPost
+    post = db.session.query(SocialMediaPost).filter_by(id=post_id).first()
+    if post is None or post.user_id != _uid():
+        return None
+    return post
+
+
+@api_bp.route("/auth/register", methods=["POST"])
+def auth_register():
+    data = request.get_json() or {}
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return jsonify({"error": "Valid email is required"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    session = auth_session()
+    try:
+        user = create_user(
+            email=email, password=password,
+            username=str(data.get("username") or "").strip() or None,
+            first_name=str(data.get("first_name") or "").strip() or None,
+            last_name=str(data.get("last_name") or "").strip() or None,
+            db=session,
+        )
+        token = create_access_token({"sub": user.id})
+        return jsonify({"user": user_to_dict(user), "token": token}), 201
+    except AuthenticationError as e:
+        return jsonify({"error": str(e)}), 409
+    finally:
+        session.close()
+
+
+@api_bp.route("/auth/login", methods=["POST"])
+def auth_login():
+    data = request.get_json() or {}
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    session = auth_session()
+    try:
+        user = authenticate_user(email, password, session)
+        if user is None:
+            # Generic message: don't reveal whether email or password was wrong
+            return jsonify({"error": "Invalid email or password"}), 401
+        token = create_access_token({"sub": user.id})
+        return jsonify({"user": user_to_dict(user), "token": token}), 200
+    finally:
+        session.close()
+
+
+@api_bp.route("/auth/me", methods=["GET"])
+def auth_me():
+    return jsonify({"user": user_to_dict(g.current_user)})
+
+
+@api_bp.route("/auth/change-password", methods=["POST"])
+def auth_change_password():
+    data = request.get_json() or {}
+    current = str(data.get("current_password") or "")
+    new = str(data.get("new_password") or "")
+    if len(new) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
+    session = auth_session()
+    try:
+        user = session.query(User).filter_by(id=g.current_user.id).first()
+        if user is None or not verify_password(current, user.hashed_password):
+            return jsonify({"error": "Current password is incorrect"}), 401
+        user.hashed_password = hash_password(new)
+        session.commit()
+        return jsonify({"message": "Password updated"}), 200
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Settings + BYOK (bring your own key)
+# ---------------------------------------------------------------------------
+# Keys are stored Fernet-encrypted and are NEVER returned in plaintext:
+# responses only report per-provider status (configured / source / hint).
+
+# Canonical OpenRouter model catalog (label -> full id). Preferred-model
+# validation checks against these ids plus the server-configured model.
+def _model_options():
+    from app.core.openrouter_client import OpenRouterClient
+    catalog = [{"label": k, "id": v} for k, v in OpenRouterClient(None).models.items()]
+    from app.utils.config import DEFAULT_OPENROUTER_MODEL
+    ids = {m["id"] for m in catalog}
+    env_model = os.getenv("OPENROUTER_MODEL")
+    extra = {DEFAULT_OPENROUTER_MODEL} | ({env_model} if env_model else set())
+    for mid in sorted(extra - ids):
+        catalog.append({"label": mid, "id": mid})
+    return catalog
+
+
+def _byok_status(user_keys: dict) -> dict:
+    from app.utils.config import BYOK_PROVIDERS, mask_key
+    out = {}
+    for provider, meta in BYOK_PROVIDERS.items():
+        env_var = meta["env_var"]
+        key = user_keys.get(env_var)
+        out[provider] = {
+            "label": meta["label"],
+            "configured": bool(key),
+            # source is informational only; resolution order is user -> env
+            "source": "user" if key else ("server" if os.getenv(env_var) else "none"),
+            "hint": mask_key(key),
+        }
+    return out
+
+
+def _settings_payload(user, settings, user_keys: dict):
+    return {
+        "profile": {
+            "email": user.email,
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+        },
+        "preferences": {
+            "default_mode": settings.default_mode or "deep",
+            "preferred_model": settings.preferred_model,
+        },
+        "available_models": _model_options(),
+        "byok": _byok_status(user_keys),
+    }
+
+
+def _settings_row():
+    session = auth_session()
+    try:
+        row = session.query(UserSettings).filter_by(user_id=g.current_user.id).first()
+        if row is None:
+            row = UserSettings(user_id=g.current_user.id, default_mode="deep")
+            session.add(row)
+            session.commit()
+        # Snapshot plain values while the session is open
+        return {
+            "default_mode": row.default_mode or "deep",
+            "preferred_model": row.preferred_model,
+            "byok_keys_enc": row.byok_keys_enc,
+        }
+    finally:
+        session.close()
+
+
+@api_bp.route("/settings", methods=["GET"])
+def get_settings():
+    from app.utils.config import decrypt_api_keys
+    row = _settings_row()
+    user_keys = decrypt_api_keys(row["byok_keys_enc"])
+    fake_settings = type("S", (), row)()
+    return jsonify(_settings_payload(g.current_user, fake_settings, user_keys))
+
+
+@api_bp.route("/settings", methods=["PUT"])
+def update_settings():
+    data = request.get_json() or {}
+    from app.utils.config import BYOK_PROVIDERS, encrypt_api_keys, decrypt_api_keys
+
+    session = auth_session()
+    try:
+        user = session.query(User).filter_by(id=g.current_user.id).first()
+        settings = session.query(UserSettings).filter_by(user_id=g.current_user.id).first()
+        if settings is None:
+            settings = UserSettings(user_id=g.current_user.id, default_mode="deep")
+            session.add(settings)
+
+        # --- profile fields (setattr: dict writes bypass SQLAlchemy
+        # change-tracking and would silently not persist) ---
+        for field in ("first_name", "last_name"):
+            if field in data:
+                setattr(user, field, str(data[field] or "").strip()[:100] or None)
+        if "username" in data:
+            username = str(data["username"] or "").strip()
+            if username:
+                taken = session.query(User).filter(
+                    User.username == username, User.id != user.id
+                ).first()
+                if taken:
+                    return jsonify({"error": "Username already taken"}), 409
+                user.username = username
+            else:
+                user.username = None
+
+        # --- preferences ---
+        if "default_mode" in data:
+            mode = str(data["default_mode"] or "").strip().lower()
+            if mode not in ("quick", "deep"):
+                return jsonify({"error": "default_mode must be 'quick' or 'deep'"}), 400
+            settings.default_mode = mode
+        if "preferred_model" in data:
+            model = data["preferred_model"]
+            if model is None or (isinstance(model, str) and not model.strip()):
+                settings.preferred_model = None
+            else:
+                allowed = {m["id"] for m in _model_options()}
+                if not isinstance(model, str) or model not in allowed:
+                    return jsonify({"error": "Unknown preferred_model"}), 400
+                settings.preferred_model = model
+
+        # --- BYOK keys: {provider: key} sets, {provider: ""} (or null) removes ---
+        if "byok" in data:
+            byok = data.get("byok") or {}
+            unknown = set(byok.keys()) - set(BYOK_PROVIDERS.keys())
+            if unknown:
+                return jsonify({"error": f"Unknown BYOK providers: {', '.join(sorted(unknown))}"}), 400
+            user_keys = decrypt_api_keys(settings.byok_keys_enc)
+            for provider, key in byok.items():
+                env_var = BYOK_PROVIDERS[provider]["env_var"]
+                if key is None or str(key).strip() == "":
+                    user_keys.pop(env_var, None)
+                else:
+                    user_keys[env_var] = str(key).strip()
+            settings.byok_keys_enc = encrypt_api_keys(user_keys) if user_keys else None
+
+        session.commit()
+        snapshot = {
+            "default_mode": settings.default_mode or "deep",
+            "preferred_model": settings.preferred_model,
+            "byok_keys_enc": settings.byok_keys_enc,
+        }
+        user_snapshot = (user.email, user.username, user.first_name, user.last_name,
+                         user.role, user.created_at)
+        user_keys = decrypt_api_keys(snapshot["byok_keys_enc"])
+        fake_user = type("U", (), {
+            "email": user_snapshot[0], "username": user_snapshot[1],
+            "first_name": user_snapshot[2], "last_name": user_snapshot[3],
+            "role": user_snapshot[4], "created_at": user_snapshot[5],
+        })()
+    finally:
+        session.close()
+    fake_settings = type("S", (), snapshot)()
+    return jsonify(_settings_payload(fake_user, fake_settings, user_keys))
 
 
 def run_analysis(task_id: int, platform: str, profile_id: str, app=None, mode: str = "deep"):
@@ -43,6 +345,12 @@ def run_analysis(task_id: int, platform: str, profile_id: str, app=None, mode: s
         if not task:
             logger.error(f"Task {task_id} not found")
             return
+
+        # Install the owning user's BYOK keys + preferences for this run.
+        # The task row carries the owner, so this works for the threaded
+        # executor and for celery workers (separate process).
+        from app.utils.config import set_user_context, reset_user_context
+        _ctx_token = set_user_context(load_user_context(task.user_id))
 
         try:
             # Update task status
@@ -92,6 +400,8 @@ def run_analysis(task_id: int, platform: str, profile_id: str, app=None, mode: s
             if task.started_at:
                 task.duration = (task.completed_at - task.started_at).total_seconds()
             db.session.commit()
+        finally:
+            reset_user_context(_ctx_token)
 
 
 @api_bp.route("/analyze", methods=["POST"])
@@ -105,10 +415,19 @@ def start_analysis():
             400,
         )
 
+    # Mode: explicit request value wins, else the user's saved default.
+    mode = data.get("mode")
+    if mode is None:
+        mode = load_user_context(_uid())["default_mode"]
+    if mode not in ("quick", "deep"):
+        return jsonify({"error": "mode must be 'quick' or 'deep'"}), 400
+
     # Create new task (Task.__init__ only accepts platform and profile_id)
+    # user_id is passed through kwargs and stamped as the owner.
     task = Task(
         platform=data["platform"].lower(),
-        profile_id=data["profile_id"]
+        profile_id=data["profile_id"],
+        user_id=_uid(),
     )
     # Status is set to PENDING by default in __init__
 
@@ -143,7 +462,6 @@ def start_analysis():
         try:
             # Pass app instance to thread for context
             app_instance = current_app._get_current_object()
-            mode = data.get("mode", "deep")
             thread = threading.Thread(
                 target=run_analysis, 
                 args=(task.id, task.platform, task.profile_id, app_instance, mode)
@@ -170,7 +488,9 @@ def start_analysis():
 @api_bp.route("/tasks/<int:task_id>", methods=["GET"])
 def get_task(task_id):
     """Get task status and details"""
-    task = Task.query.get_or_404(task_id)
+    task = _own_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
     return jsonify(task.to_dict())
 
 
@@ -183,8 +503,8 @@ def list_tasks():
     limit = request.args.get("limit", type=int, default=10)
     offset = request.args.get("offset", type=int, default=0)
 
-    # Build query
-    query = Task.query
+    # Build query (scoped to the authenticated user)
+    query = Task.query.filter_by(user_id=_uid())
 
     if platform:
         query = query.filter_by(platform=platform.lower())
@@ -215,7 +535,9 @@ def list_tasks():
 @api_bp.route("/tasks/<int:task_id>/status", methods=["GET"])
 def get_task_status(task_id):
     """Get task status only - for polling"""
-    task = Task.query.get_or_404(task_id)
+    task = _own_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
     return jsonify(
         {
             "id": task.id,
@@ -230,7 +552,9 @@ def get_task_status(task_id):
 @api_bp.route("/tasks/<int:task_id>/cancel", methods=["POST"])
 def cancel_task(task_id):
     """Cancel a pending or processing task"""
-    task = Task.query.get_or_404(task_id)
+    task = _own_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
 
     if task.status not in [TaskStatus.PENDING, TaskStatus.PROCESSING]:
         msg = "Can only cancel pending or processing tasks"
@@ -249,7 +573,9 @@ def cancel_task(task_id):
 @api_bp.route("/tasks/<int:task_id>/retry", methods=["POST"])
 def retry_task(task_id):
     """Retry a stuck or failed task using threading (bypass Celery)"""
-    task = Task.query.get_or_404(task_id)
+    task = _own_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
 
     # Only allow retrying pending, failed, or stuck processing tasks
     if task.status not in [TaskStatus.PENDING, TaskStatus.FAILED, TaskStatus.PROCESSING]:
@@ -290,7 +616,9 @@ def retry_task(task_id):
 @api_bp.route("/tasks/<int:task_id>/results", methods=["GET"])
 def get_results(task_id):
     """Get analysis results for a completed task"""
-    task = Task.query.get_or_404(task_id)
+    task = _own_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
 
     if task.status != TaskStatus.COMPLETED:
         msg = "Results only available for completed tasks"
@@ -336,7 +664,9 @@ def get_results(task_id):
 @api_bp.route("/tasks/<int:task_id>/download", methods=["GET"])
 def download_results(task_id):
     """Download task results as a file (JSON or HTML Dossier)"""
-    task = Task.query.get_or_404(task_id)
+    task = _own_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
     output_format = request.args.get('format', 'json').lower()
 
     if task.status != TaskStatus.COMPLETED:
@@ -398,6 +728,7 @@ def platform_distribution():
     """Get platform distribution statistics"""
     platform_stats = (
         db.session.query(Task.platform, db.func.count(Task.id).label("count"))
+        .filter(Task.user_id == _uid())
         .group_by(Task.platform)
         .all()
     )
@@ -410,9 +741,9 @@ def platform_distribution():
 @api_bp.route("/stats/completion-rate", methods=["GET"])
 def completion_rate():
     """Get task completion rate statistics"""
-    total = Task.query.count()
-    completed = Task.query.filter_by(status=TaskStatus.COMPLETED).count()
-    failed = Task.query.filter_by(status=TaskStatus.FAILED).count()
+    total = Task.query.filter_by(user_id=_uid()).count()
+    completed = Task.query.filter_by(user_id=_uid(), status=TaskStatus.COMPLETED).count()
+    failed = Task.query.filter_by(user_id=_uid(), status=TaskStatus.FAILED).count()
 
     return jsonify(
         {
@@ -561,9 +892,13 @@ def create_verification_post():
     lang = LanguageCode.EN if lang_code == "en" else (LanguageCode.BN if lang_code == "bn" else LanguageCode.UNKNOWN)
     post_id = data.get("id") or f"{platform}_{hashlib.md5(text.encode()).hexdigest()[:12]}"
     post = db.session.query(SocialMediaPost).filter_by(id=post_id).first()
+    if post and post.user_id != _uid():
+        # Post id already belongs to another user: don't leak or overwrite it
+        return jsonify({"error": "Post not found"}), 404
     if not post:
         post = SocialMediaPost(
             id=post_id,
+            user_id=_uid(),
             platform=platform,
             profile_id=profile_id,
             text=text,
@@ -592,7 +927,9 @@ def create_verification_post():
 @api_bp.route("/verification/post/from-task/<int:task_id>", methods=["POST"])
 def create_post_from_task(task_id):
     """Bridge: Product A Task -> Product B SocialMediaPost (consolidation)."""
-    task = Task.query.get_or_404(task_id)
+    task = _own_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
     if not getattr(task, "has_result", False) or not getattr(task, "result_data", None):
         # try file fallback
         data = None
@@ -634,6 +971,7 @@ def create_post_from_task(task_id):
         return jsonify({"message": "Post already exists", **_verification_payload(post=existing)}), 200
     post = SocialMediaPost(
         id=post_id,
+        user_id=_uid(),
         platform=task.platform,
         profile_id=task.profile_id,
         text=text,
@@ -654,15 +992,17 @@ def create_post_from_task(task_id):
 def list_verification_posts():
     from app.web.models.verification import SocialMediaPost
     limit = request.args.get("limit", type=int, default=20)
-    posts = db.session.query(SocialMediaPost).order_by(SocialMediaPost.created_at.desc()).limit(limit).all()
+    posts = db.session.query(SocialMediaPost).filter_by(user_id=_uid()).order_by(SocialMediaPost.created_at.desc()).limit(limit).all()
     return jsonify({"posts": [_verification_payload(post=p) for p in posts], "total": len(posts)})
 
 
 @api_bp.route("/verification/claims", methods=["GET"])
 def list_verification_claims():
-    from app.web.models.verification import Claim
+    from app.web.models.verification import Claim, SocialMediaPost
     limit = request.args.get("limit", type=int, default=20)
-    claims = db.session.query(Claim).order_by(Claim.extracted_at.desc()).limit(limit).all()
+    claims = (db.session.query(Claim).join(SocialMediaPost, Claim.post_id == SocialMediaPost.id)
+              .filter(SocialMediaPost.user_id == _uid())
+              .order_by(Claim.extracted_at.desc()).limit(limit).all())
     return jsonify({"claims": [_verification_payload(claim=c)["claim"] for c in claims], "total": len(claims)})
 
 
@@ -671,6 +1011,10 @@ def get_verification_claim(claim_id):
     from app.web.models.verification import Claim, VerificationResult
     claim = db.session.query(Claim).filter_by(id=claim_id).first()
     if not claim:
+        return jsonify({"error": "Claim not found"}), 404
+    from app.web.models.verification import SocialMediaPost as _SMP
+    post = db.session.query(_SMP).filter_by(id=claim.post_id).first()
+    if post is None or post.user_id != _uid():
         return jsonify({"error": "Claim not found"}), 404
     vr = db.session.query(VerificationResult).filter_by(claim_id=claim.id).first()
     return jsonify(_verification_payload(claim=claim, vr=vr))
@@ -688,6 +1032,10 @@ def review_verification_claim(claim_id):
     from app.web.models.verification import Claim, VerificationResult, VerificationStatus
     claim = db.session.query(Claim).filter_by(id=claim_id).first()
     if not claim:
+        return jsonify({"error": "Claim not found"}), 404
+    from app.web.models.verification import SocialMediaPost as _SMP2
+    _post = db.session.query(_SMP2).filter_by(id=claim.post_id).first()
+    if _post is None or _post.user_id != _uid():
         return jsonify({"error": "Claim not found"}), 404
     vr = db.session.query(VerificationResult).filter_by(claim_id=claim.id).first()
     if not vr:
@@ -725,9 +1073,13 @@ def review_verification_claim(claim_id):
 
 @api_bp.route("/verification/results", methods=["GET"])
 def list_verification_results():
-    from app.web.models.verification import VerificationResult
+    from app.web.models.verification import VerificationResult, Claim, SocialMediaPost
     limit = request.args.get("limit", type=int, default=20)
-    rows = db.session.query(VerificationResult).order_by(VerificationResult.created_at.desc()).limit(limit).all()
+    rows = (db.session.query(VerificationResult)
+            .join(Claim, VerificationResult.claim_id == Claim.id)
+            .join(SocialMediaPost, Claim.post_id == SocialMediaPost.id)
+            .filter(SocialMediaPost.user_id == _uid())
+            .order_by(VerificationResult.created_at.desc()).limit(limit).all())
     return jsonify({"results": [_verification_payload(vr=r)["verification"] for r in rows], "total": len(rows)})
 
 
@@ -744,17 +1096,25 @@ def run_verification_pipeline():
     from app.web.models.verification import SocialMediaPost, Claim
     extractor = ClaimExtractor()
     if data.get("post_id"):
-        post = db.session.query(SocialMediaPost).filter_by(id=data["post_id"]).first()
+        post = _own_post(data["post_id"])
         if not post:
             return jsonify({"error": "Post not found"}), 404
         claims = extractor.extract_claims_from_post(post)
         summaries.append({"stage": "extract", "post_id": post.id, "claims": len(claims)})
     else:
-        processed, extracted = extractor.process_unprocessed_posts(limit=limit)
-        summaries.append({"stage": "extract", "processed_posts": processed, "claims_extracted": extracted})
+        # Batch mode scoped to the caller's own unprocessed posts only
+        # (extractor.process_unprocessed_posts would process everyone's).
+        own_posts = (db.session.query(SocialMediaPost)
+                     .filter_by(user_id=_uid(), processed_for_claims=False)
+                     .limit(limit).all())
+        extracted = 0
+        for p in own_posts:
+            extracted += len(extractor.extract_claims_from_post(p))
+        summaries.append({"stage": "extract", "processed_posts": len(own_posts), "claims_extracted": extracted})
     # 2-4) Fact-check -> temporal -> RAG -> confidence for claims lacking verification
     from app.web.models.verification import VerificationResult
-    claims = db.session.query(Claim).limit(limit).all()
+    claims = (db.session.query(Claim).join(SocialMediaPost, Claim.post_id == SocialMediaPost.id)
+              .filter(SocialMediaPost.user_id == _uid()).limit(limit).all())
     for claim in claims:
         vr = db.session.query(VerificationResult).filter_by(claim_id=claim.id).first()
         if vr and vr.evidence_chain and "layer_4" in vr.evidence_chain and "layer_7" in vr.evidence_chain:
@@ -786,7 +1146,7 @@ def run_verification_pipeline_scoped(post_id=None):
     from app.core.claim_extraction.extractor import ClaimExtractor
     from app.web.models.verification import SocialMediaPost, Claim
     extractor = ClaimExtractor()
-    post = db.session.query(SocialMediaPost).filter_by(id=post_id).first()
+    post = _own_post(post_id)
     if not post:
         return jsonify({"error": "Post not found"}), 404
     claims = extractor.extract_claims_from_post(post)

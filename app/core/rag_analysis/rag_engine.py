@@ -31,8 +31,8 @@ class RAGEngine:
         # Default to the configured OpenRouter model (Nemotron free by default in
         # openrouter_client). The previous hardcoded anthropic/claude-3.5-sonnet
         # 404s on OpenRouter, so Layer 6 always failed with "LLM call failed: 404".
-        import os as _os
-        self.model = model or _os.getenv("OPENROUTER_MODEL") or "nvidia/nemotron-3-ultra-550b-a55b:free"
+        from app.utils.config import resolve_openrouter_model as _resolve_model
+        self.model = model or _resolve_model()
         self.temperature = temperature
         self.min_evidence_count = min_evidence_count
         self.min_grounding_score = min_grounding_score

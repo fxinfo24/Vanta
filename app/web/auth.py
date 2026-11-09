@@ -6,19 +6,26 @@ JWT-based authentication with role-based access control
 import os
 import jwt
 import bcrypt
+import logging
 from datetime import datetime, timedelta
+from functools import wraps
 from typing import Optional, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from dotenv import load_dotenv
 
-from .database import get_database_session
 from .models.user import User, UserRole
+
+logger = logging.getLogger("auth")
 
 # Load environment variables
 load_dotenv()
 
-# JWT Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "Vanta2024SecureTokenKey")
+# JWT Configuration: prefer a dedicated secret, fall back to the Flask
+# SECRET_KEY (present in .env). Never ship a hardcoded production secret.
+SECRET_KEY = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    SECRET_KEY = "dev-jwt-key-change-in-production"
+    logger.warning("JWT_SECRET_KEY/SECRET_KEY not set; using insecure dev key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
 
@@ -60,7 +67,9 @@ def verify_token(token: str) -> Dict[str, Any]:
         return payload
     except jwt.ExpiredSignatureError:
         raise AuthenticationError("Token has expired")
-    except jwt.JWTError:
+    except jwt.InvalidTokenError:
+        # PyJWT 2.x: InvalidTokenError is the base class of every decode
+        # failure (bad signature, malformed token, wrong algorithm, ...).
         raise AuthenticationError("Invalid token")
 
 def authenticate_user(email: str, password: str, db: Session) -> Optional[User]:
@@ -114,6 +123,57 @@ def create_user(email: str, password: str, username: str = None,
     
     return user
 
+def auth_session() -> Session:
+    """Session bound to the *Flask app's* engine.
+
+    `User` lives on the legacy declarative `Base` (database.py, used by the
+    enterprise modules), but its table is created in whichever database the
+    Flask app is configured with (app.py does User.__table__.create on the
+    app engine). Binding sessions to that engine keeps tests (in-memory DB)
+    and production on the same store instead of the module-level engine in
+    database.py, which would silently point tests at the live DB file.
+    """
+    from .models import db as flask_db
+    # Inside an app context, flask_db.engine is the app's engine.
+    return sessionmaker(bind=flask_db.engine)()
+
+
+def user_to_dict(user: User) -> Dict[str, Any]:
+    """Public representation of a user (never includes the password hash)."""
+    return {
+        "id": user.id,
+        "email": user.email,
+        "username": user.username,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+        "is_active": bool(user.is_active),
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+def token_required(func):
+    """Flask decorator: require `Authorization: Bearer <jwt>`.
+
+    Sets flask.g.current_user on success; returns a JSON 401 otherwise.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        from flask import request, g, jsonify
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return jsonify({"error": "Authentication required (Bearer token)"}), 401
+        session = auth_session()
+        try:
+            g.current_user = get_current_user(header[len("Bearer "):].strip(), session)
+        except AuthenticationError as e:
+            return jsonify({"error": str(e)}), 401
+        finally:
+            session.close()
+        return func(*args, **kwargs)
+    return wrapper
+
+
 def get_current_user(token: str, db: Session) -> User:
     """Get current user from JWT token"""
     try:
@@ -158,6 +218,44 @@ def require_role(required_role: UserRole):
             return func(*args, **kwargs)
         return wrapper
     return decorator
+
+def get_or_create_settings(db: Session, user_id: int) -> "UserSettings":
+    """Fetch the UserSettings row for a user, creating an empty one lazily."""
+    from .models.user import UserSettings
+    settings = db.query(UserSettings).filter_by(user_id=user_id).first()
+    if settings is None:
+        settings = UserSettings(user_id=user_id, default_mode="deep")
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+def load_user_context(user_id: Optional[int]) -> Dict[str, Any]:
+    """Execution context for one user's analysis runs.
+
+    Returns {"keys": {env_var: plaintext_key}, "preferred_model": str|None,
+    "default_mode": str}. Keys are decrypted from the user's encrypted
+    BYOK blob. A user with no settings (or legacy task with user_id NULL)
+    gets an empty key dict - clients then fall back to server env vars.
+    """
+    if user_id is None:
+        return {"keys": {}, "preferred_model": None, "default_mode": "deep"}
+    from .models.user import UserSettings
+    from app.utils.config import decrypt_api_keys
+    session = auth_session()
+    try:
+        row = session.query(UserSettings).filter_by(user_id=user_id).first()
+        if row is None:
+            return {"keys": {}, "preferred_model": None, "default_mode": "deep"}
+        return {
+            "keys": decrypt_api_keys(row.byok_keys_enc),
+            "preferred_model": row.preferred_model,
+            "default_mode": row.default_mode or "deep",
+        }
+    finally:
+        session.close()
+
 
 def generate_api_key() -> str:
     """Generate a new API key"""

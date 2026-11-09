@@ -25,21 +25,32 @@ class RateLimitError(Exception):
 
 class ScrapeCreatorsClient:
     """Enhanced client for ScrapeCreators API"""
-    
-    def __init__(self):
-        self.api_key = os.getenv("SCRAPECREATORS_API_KEY")
+
+    def __init__(self, api_key=None):
+        # Explicit key wins; otherwise resolve per-request (BYOK user key
+        # -> server env) so cached clients never serve another user's key.
+        from app.utils.config import resolve_api_key
+        self._explicit_key = api_key
+        self.api_key = api_key or resolve_api_key("SCRAPECREATORS_API_KEY")
         self.base_url = os.getenv("SCRAPECREATORS_BASE_URL", "https://api.scrapecreators.com")
-        
+
         if not self.api_key or self.api_key == "your_scrapecreators_api_key_here":
             logger.warning("ScrapeCreators API key not configured")
             self.api_key = None
-            
+
         self.session = requests.Session()
         self.session.headers.update({
             "x-api-key": self.api_key,  # Correct header per ScrapeCreators docs
             "Content-Type": "application/json",
             "User-Agent": "Vanta/1.0"
         })
+
+    def _refresh_auth(self):
+        """Re-resolve the key for the current execution context."""
+        from app.utils.config import resolve_api_key
+        self.api_key = self._explicit_key or resolve_api_key("SCRAPECREATORS_API_KEY")
+        if self.api_key:
+            self.session.headers["x-api-key"] = self.api_key
         
         # Rate limiting
         self.last_request_time = 0
@@ -59,6 +70,7 @@ class ScrapeCreatorsClient:
     
     def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make API request with error handling"""
+        self._refresh_auth()  # per-request key (BYOK context -> env)
         if not self.api_key:
             raise ScrapeCreatorsError("API key not configured")
         
@@ -1838,20 +1850,37 @@ APIFY_ACTORS = {
 
 class ApifyClient:
     def __init__(self, token=None):
-        self.api_token = token or os.getenv("APIFY_API_TOKEN") or os.getenv("APIFY_TOKEN")
-        if self.api_token and self.api_token.startswith("your_"):
-            self.api_token = None
+        # Explicit token wins; otherwise resolve per-request (BYOK -> env).
+        from app.utils.config import resolve_api_key
+        self._explicit_token = token
+        self.api_token = self._resolve_token()
         self.base_url = os.getenv("APIFY_BASE_URL", "https://api.apify.com/v2")
         self.session = requests.Session()
         if self.api_token:
             self.session.headers.update({"Authorization": f"Bearer {self.api_token}"})
 
+    def _resolve_token(self):
+        from app.utils.config import resolve_api_key
+        token = (self._explicit_token
+                 or resolve_api_key("APIFY_API_TOKEN")
+                 or resolve_api_key("APIFY_TOKEN"))
+        if token and token.startswith("your_"):
+            return None
+        return token
+
+    def _refresh_auth(self):
+        """Re-resolve the token for the current execution context."""
+        self.api_token = self._resolve_token()
+        if self.api_token:
+            self.session.headers["Authorization"] = f"Bearer {self.api_token}"
+
     @property
     def is_configured(self):
-        return bool(self.api_token)
+        return bool(self._resolve_token())
 
     def check_token(self):
         """GET /users/me — cheap auth check, no Actor run / no cost."""
+        self._refresh_auth()
         if not self.is_configured:
             return {"configured": False, "valid": False}
         r = self.session.get(f"{self.base_url}/users/me", timeout=15)
@@ -1860,6 +1889,7 @@ class ApifyClient:
 
     def run_actor(self, actor_id, actor_input, timeout=120):
         """Synchronously run an Actor and return dataset items (list)."""
+        self._refresh_auth()  # per-request token (BYOK context -> env)
         if not self.is_configured:
             raise ApifyError("APIFY_API_TOKEN not configured")
         actor = actor_id.replace("/", "~")  # API accepts user~name in path
@@ -1925,8 +1955,8 @@ class ApifyClient:
         return {"profile": profile, "posts": posts, "actor": actor_id, "count": len(posts)}
 
 
-def get_apify_client():
-    return ApifyClient()
+def get_apify_client(token=None):
+    return ApifyClient(token=token)
 
 
 # Fallback mock client for testing when API key is not available
@@ -1980,9 +2010,9 @@ class MockScrapeCreatorsClient:
         # Default behavior for other attributes
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
-def get_scrape_client() -> ScrapeCreatorsClient:
+def get_scrape_client(api_key=None) -> ScrapeCreatorsClient:
     """Get ScrapeCreators client instance"""
-    client = ScrapeCreatorsClient()
+    client = ScrapeCreatorsClient(api_key=api_key)
     
     # Return mock client if API key not configured
     if not client.api_key:

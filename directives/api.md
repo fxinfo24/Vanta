@@ -21,9 +21,19 @@ Vanta provides a comprehensive RESTful API for social media profile analysis acr
 ## API Endpoints
 
 ### Authentication
-This repository's Flask API routes do **not** currently implement authentication (JWT/API keys).
+Every `/api` route except `GET /api/health` and the `POST /api/auth/*` routes requires a JWT (24h expiry) in the `Authorization: Bearer <token>` header. Requests without a valid token return **401**; cross-user access returns **404** (never 403, so resource existence doesn't leak). Each user only ever sees their own tasks, posts, claims, verification results, and settings.
 
-If you are deploying publicly, you should add auth at the Flask layer (e.g., `flask-login`, JWT middleware) or behind an API gateway.
+#### POST /api/auth/register — `{email, password, username?, first_name?, last_name?}` → `{user, token}` (201; 409 duplicate email/username; 400 invalid email or password < 8 chars)
+#### POST /api/auth/login — `{email, password}` → `{user, token}` (200; generic 401 on bad credentials — doesn't reveal which field was wrong)
+#### GET /api/auth/me — current user (requires token)
+#### POST /api/auth/change-password — `{current_password, new_password}` → `{message}` (401 wrong current; 400 new < 8 chars)
+
+### Settings + BYOK (implemented)
+
+Per-user settings live in the profile menu → **Settings**. Keys are stored **Fernet-encrypted** (key derived from `BYOK_ENCRYPTION_KEY` or `SECRET_KEY`) and are **never returned in plaintext** — responses only report per-provider `configured`/`source`/`hint` (masked last-4). Resolution order per analysis run: user's own key → server env var → provider honestly reports unavailable (never mock data). A user's keys never apply to another user's runs.
+
+#### GET /api/settings — `{profile, preferences: {default_mode, preferred_model}, available_models, byok: {provider: {label, configured, source, hint}}}`
+#### PUT /api/settings — partial update; accepted keys: `first_name`, `last_name`, `username`, `default_mode` (`quick`|`deep`), `preferred_model` (catalog id or `null`), `byok: {provider: key}` (set) or `byok: {provider: ""}` (remove). Returns the GET shape. Using `POST /api/analyze` without `mode` applies the saved `default_mode`.
 
 ### Core Task/Analysis Endpoints (implemented)
 

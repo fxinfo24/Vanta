@@ -6,11 +6,125 @@ Handles loading and validation of configuration settings
 import os
 import json
 import logging
+import base64
+import hashlib
+import contextvars
 from typing import Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
 logger = logging.getLogger("Vanta.Config")
+
+
+# ---------------------------------------------------------------------------
+# Per-user execution context + BYOK (bring your own key) resolution
+# ---------------------------------------------------------------------------
+# API-layer entry points (Flask before_request for sync routes, the
+# analysis background thread, and the Celery worker) install the owning
+# user's resolved keys + preferences into this ContextVar before running
+# any client code. Client modules resolve keys via resolve_api_key()
+# (user key -> server env fallback), so a user's own keys are used for
+# THEIR analyses only and a missing key never falls back to mock data.
+
+BYOK_PROVIDERS: Dict[str, Dict[str, str]] = {
+    "openrouter": {"label": "OpenRouter (LLM)", "env_var": "OPENROUTER_API_KEY"},
+    "scrapecreators": {"label": "ScrapeCreators (data)", "env_var": "SCRAPECREATORS_API_KEY"},
+    "newsapi": {"label": "NewsAPI (temporal verification)", "env_var": "NEWSAPI_KEY"},
+    "google_factcheck": {"label": "Google Fact Check", "env_var": "GOOGLE_FACT_CHECK_API_KEY"},
+    "claimbuster": {"label": "ClaimBuster (check-worthiness)", "env_var": "CLAIMBUSTER_API_KEY"},
+    "apify": {"label": "Apify (fallback scraper)", "env_var": "APIFY_API_TOKEN"},
+}
+
+# env_var -> provider key, for status reporting
+_BYOK_ENV_TO_PROVIDER = {v["env_var"]: k for k, v in BYOK_PROVIDERS.items()}
+
+DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+_user_context_var: contextvars.ContextVar = contextvars.ContextVar(
+    "vanta_user_context", default=None
+)
+
+
+def set_user_context(ctx: Optional[Dict[str, Any]]):
+    """Install the execution context for the current thread/async context.
+    Returns an opaque token for reset_user_context()."""
+    return _user_context_var.set(ctx)
+
+
+def reset_user_context(token) -> None:
+    if token is not None:
+        _user_context_var.reset(token)
+
+
+def get_user_context() -> Optional[Dict[str, Any]]:
+    return _user_context_var.get()
+
+
+def resolve_api_key(env_var: str) -> Optional[str]:
+    """Resolve an API key: the owning user's BYOK key first, then the
+    server environment variable. Returns None when neither is set."""
+    ctx = _user_context_var.get()
+    if ctx:
+        key = (ctx.get("keys") or {}).get(env_var)
+        if key:
+            return key
+    return os.getenv(env_var)
+
+
+def resolve_openrouter_model() -> str:
+    """User's preferred OpenRouter model -> OPENROUTER_MODEL env -> default."""
+    ctx = _user_context_var.get()
+    if ctx and ctx.get("preferred_model"):
+        return ctx["preferred_model"]
+    return os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
+
+
+def key_source(env_var: str) -> str:
+    """'user' when the key comes from BYOK, 'server' when from env,
+    'none' when unset. Used for status reporting (never exposes values)."""
+    ctx = _user_context_var.get()
+    if ctx and (ctx.get("keys") or {}).get(env_var):
+        return "user"
+    return "server" if os.getenv(env_var) else "none"
+
+
+def mask_key(key: Optional[str]) -> str:
+    """Display hint for a stored key: bullet prefix + last 4 chars."""
+    if not key:
+        return ""
+    return f"\u2022\u2022\u2022\u2022{key[-4:]}" if len(key) >= 4 else "\u2022\u2022\u2022\u2022"
+
+
+# --- BYOK storage encryption (Fernet, key derived from server secret) ----
+
+def _fernet():
+    from cryptography.fernet import Fernet
+    load_dotenv(override=True)
+    secret = os.getenv("BYOK_ENCRYPTION_KEY") or os.getenv("SECRET_KEY")
+    if not secret:
+        raise RuntimeError(
+            "BYOK_ENCRYPTION_KEY or SECRET_KEY must be set to store API keys"
+        )
+    digest = hashlib.sha256((secret + "::vanta-byok-v1").encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def encrypt_api_keys(keys: Dict[str, str]) -> str:
+    """Encrypt a {env_var: key} dict for storage. Plaintext never persisted."""
+    return _fernet().encrypt(json.dumps(keys, sort_keys=True).encode()).decode()
+
+
+def decrypt_api_keys(encrypted: Optional[str]) -> Dict[str, str]:
+    """Decrypt a stored BYOK blob. Returns {} for empty/corrupt data;
+    decryption failure means the server secret rotated - the user must
+    re-enter their keys (never crashes the pipeline, never guesses)."""
+    if not encrypted:
+        return {}
+    try:
+        return json.loads(_fernet().decrypt(encrypted.encode()).decode())
+    except Exception as e:
+        logger.error(f"BYOK decryption failed (secret rotated?): {e}")
+        return {}
 
 
 class ConfigError(Exception):

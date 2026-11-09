@@ -41,13 +41,25 @@ class SocialMediaAnalyzer:
         self.prediction_engine = PredictionEngine(confidence_threshold=threshold)
 
     def _get_collector(self, platform: str) -> DataCollector:
-        """Get or create a collector for the specified platform"""
+        """Get or create a collector for the specified platform.
+
+        The cache key includes a fingerprint of the resolved BYOK keys so
+        a collector built for one user's keys is never reused for another.
+        """
         platform = platform.lower()
-        if platform not in self._collector_cache:
+        from hashlib import sha256
+        from app.utils.config import resolve_api_key
+        keys_fp = sha256(
+            ((resolve_api_key("SCRAPECREATORS_API_KEY") or "")
+             + "|" + (resolve_api_key("APIFY_API_TOKEN") or "")
+             + "|" + (resolve_api_key("OPENROUTER_API_KEY") or "")).encode()
+        ).hexdigest()[:12]
+        cache_key = f"{platform}:{keys_fp}"
+        if cache_key not in self._collector_cache:
             # Get specific rate limit if configured, otherwise use default
             rate_limit = self.config["rate_limits"].get(platform, 60)
-            self._collector_cache[platform] = DataCollector(platform, rate_limit)
-        return self._collector_cache[platform]
+            self._collector_cache[cache_key] = DataCollector(platform, rate_limit)
+        return self._collector_cache[cache_key]
 
     def analyze_profile(self, platform: str, profile_id: str, mode: str = "deep") -> Dict[str, Any]:
         """

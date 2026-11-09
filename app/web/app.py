@@ -124,6 +124,15 @@ def create_app(test_config=None):
                 db.create_all()
             except Exception as e:
                 logger.warning(f"db.create_all() failed (migrations recommended in prod): {e}")
+        # User lives on the legacy declarative Base (enterprise modules use
+        # it); create its table in the app's database so auth works in both
+        # production and tests (in-memory DB).
+        try:
+            from .models.user import User as _User, UserSettings as _UserSettings
+            _User.__table__.create(bind=db.engine, checkfirst=True)
+            _UserSettings.__table__.create(bind=db.engine, checkfirst=True)
+        except Exception as e:
+            logger.warning(f"users/user_settings table creation failed: {e}")
 
     return app
 

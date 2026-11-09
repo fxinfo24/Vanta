@@ -29,7 +29,8 @@ class ClaimBusterClient:
     """
     
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("CLAIMBUSTER_API_KEY")
+        from app.utils.config import resolve_api_key as _resolve
+        self.api_key = api_key or _resolve("CLAIMBUSTER_API_KEY")
         # Verified live: claimbuster.org/api/v2/* is the working host
         # (idir.uta.edu variants 404; claimbuster.org returns 401 with a
         # bad key, proving the endpoint exists).

@@ -219,7 +219,8 @@ class NewsAPIClient:
     """
     
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("NEWSAPI_KEY")
+        from app.utils.config import resolve_api_key as _resolve
+        self.api_key = api_key or _resolve("NEWSAPI_KEY")
         self.base_url = "https://newsapi.org/v2"
         
         if not self.api_key:

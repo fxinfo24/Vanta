@@ -68,10 +68,11 @@ class GoogleFactCheckClient(FactCheckClient):
     def __init__(self, api_key: Optional[str] = None):
         super().__init__(api_key)
         self.base_url = "https://factchecktools.googleapis.com/v1alpha1"
-        
-        # Load API key from environment if not provided
+
+        # Load API key from the user's BYOK context if provided, else env
         if not api_key:
-            self.api_key = os.getenv("GOOGLE_FACT_CHECK_API_KEY")
+            from app.utils.config import resolve_api_key as _resolve
+            self.api_key = _resolve("GOOGLE_FACT_CHECK_API_KEY")
         
         if not self.api_key:
             logger.warning("Google Fact Check API key not configured")

@@ -29,6 +29,8 @@ alembic>=1.12.0
 requests>=2.25.0
 truststore>=0.10.0  # OS trust store: ClaimBuster (Internet2 InCommon CA) is not in certifi
 PyJWT==2.6.0
+bcrypt>=4.0.1  # password hashing for auth (app/web/auth.py)
+cryptography>=42.0.0  # Fernet encryption for BYOK API keys at rest (app/utils/config.py)
 
 # Excluded for faster builds:
 # - numpy, pandas (data processing)

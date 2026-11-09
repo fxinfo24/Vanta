@@ -87,7 +87,8 @@ RESPONSE FORMAT (JSON):
         elif self.provider == LLMProvider.ANTHROPIC:
             return os.getenv("ANTHROPIC_API_KEY")
         elif self.provider == LLMProvider.OPENROUTER:
-            return os.getenv("OPENROUTER_API_KEY")
+            from app.utils.config import resolve_api_key as _resolve
+            return _resolve("OPENROUTER_API_KEY")
         return None
     
     def analyze_claim(self, 

@@ -85,6 +85,10 @@ def run_task_analysis(self, task_id: int) -> Dict[str, Any]:
         if not task:
             return {"success": False, "error": f"Task {task_id} not found"}
 
+        # Install the owning user's BYOK keys + preferences for this run.
+        from app.web.auth import load_user_context
+        from app.utils.config import set_user_context, reset_user_context
+        _ctx_token = set_user_context(load_user_context(task.user_id))
         start = time.time()
         try:
             task.status = TaskStatus.PROCESSING
@@ -140,3 +144,5 @@ def run_task_analysis(self, task_id: int) -> Dict[str, Any]:
             task.duration = time.time() - start
             db.session.commit()
             raise
+        finally:
+            reset_user_context(_ctx_token)
