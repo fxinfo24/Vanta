@@ -23,6 +23,25 @@ from datetime import datetime, timedelta
 views_bp = Blueprint("views", __name__)
 
 
+@views_bp.before_request
+def redirect_ui_to_frontend():
+    """Send browser traffic to the real UI when the host is API-only.
+
+    On Render this origin serves the JSON API; the React app lives on Vercel and
+    `app/web/static/dist` is not deployed, so the legacy Jinja pages here render
+    unstyled. Setting `FRONTEND_URL` makes every non-API page a redirect instead
+    of serving that broken shell. Unset locally, so `bin/run.py --web` keeps
+    working as before.
+    """
+    frontend = (os.getenv("FRONTEND_URL") or "").rstrip("/")
+    if not frontend or request.method != "GET" or request.path.startswith("/api"):
+        return None
+    suffix = "" if request.path == "/" else request.path
+    if request.query_string:
+        suffix += "?" + request.query_string.decode()
+    return redirect(f"{frontend}{suffix}", code=302)
+
+
 @views_bp.route("/")
 def index():
     """Render homepage with analysis form"""

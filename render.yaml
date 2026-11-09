@@ -43,6 +43,10 @@ envVarGroups:
       # Comma-separated origins allowed to call /api/* (the Vercel frontend).
       - key: CORS_ORIGINS
         sync: false
+      # Where browser traffic to this origin should go: the API host serves no
+      # UI (static/dist is not deployed), so pages redirect to the React app.
+      - key: FRONTEND_URL
+        sync: false
 
 services:
   - type: web
