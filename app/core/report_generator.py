@@ -60,7 +60,9 @@ class DossierReportGenerator:
         profile = data.get("profile_info") or {}
         meta = data.get("metadata") or {}
         behavior = data.get("behavioral_profile") or {}
-        content_items = data.get("raw", {}).get("recent_content", []) or []
+        raw = data.get("raw", {}) or {}
+        # Quick scans now write `content`; older stored dossiers used `recent_content`.
+        content_items = raw.get("content") or raw.get("recent_content") or []
 
         return {
             "meta": {

@@ -117,10 +117,17 @@ class SocialMediaAnalyzer:
                     "follower/following samples", avail["has_network"]),
         ]
 
+        # Collection failures are part of the receipt: without them a run that
+        # collected nothing reads like an account with nothing to say.
+        collection_errors = [
+            str(err) for err in ((dossier or {}).get("errors") or []) if str(err).strip()
+        ]
+
         return {
             "measured": [i for i in items if i["status"] == "measured"],
             "not_measured": [i for i in items if i["status"] != "measured"],
             "missing_inputs": metric_gaps,
+            "collection_errors": collection_errors,
             "counts": {
                 "posts": avail["n_items"],
                 "posts_with_engagement": avail["engagement_items"],

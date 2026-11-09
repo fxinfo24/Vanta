@@ -183,6 +183,7 @@ const CoverageStrip = ({ coverage }: { coverage: any }) => {
   const measured: any[] = coverage.measured || [];
   const missing: any[] = coverage.not_measured || [];
   const gaps: string[] = coverage.missing_inputs || [];
+  const errors: string[] = coverage.collection_errors || [];
   const counts = coverage.counts || {};
   return (
     <div className="glass-card rounded-2xl p-4 mt-6">
@@ -204,6 +205,11 @@ const CoverageStrip = ({ coverage }: { coverage: any }) => {
         {counts.comments ?? 0} comments
         {gaps.length > 0 && <> · not collected: {gaps.join(', ')}</>}
       </div>
+      {errors.length > 0 && (
+        <div className="text-[11px] text-rose-300/90 mt-1 break-words">
+          Collection failed: {errors.join(' · ')}
+        </div>
+      )}
     </div>
   );
 };

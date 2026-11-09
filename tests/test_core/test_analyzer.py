@@ -318,3 +318,41 @@ def test_special_category_sections_requested_when_enabled(monkeypatch):
 
     assert '"lifestyle_risks"' in Capturing.prompt
     assert out["relationships"]["attachment_style"] == "Secure"
+
+
+def test_quick_scan_posts_are_readable_by_every_analyzer():
+    """A quick scan must publish its posts under `content`.
+
+    Regression: quick_scan wrote `recent_content`, which no analyzer reads, so a
+    quick run with real posts was analysed and reported as zero posts.
+    """
+    from app.core.deep_collector import DeepDossierCollector
+    from app.core.analyzer import SocialMediaAnalyzer
+
+    posts = [{"text": "a real collected post", "likes": 3}]
+    client = Mock()
+    client.get_facebook_profile.return_value = {"username": "someone", "follower_count": 5}
+    client.get_facebook_posts.return_value = posts
+
+    dossier = DeepDossierCollector(client=client).quick_scan("facebook", "someone")
+
+    assert dossier["content"] == posts
+    assert "recent_content" not in dossier
+
+    coverage = SocialMediaAnalyzer._build_coverage({}, dossier)
+    assert coverage["counts"]["posts"] == 1
+    assert {i["section"] for i in coverage["measured"]} >= {"sentiment", "content"}
+
+
+def test_coverage_reports_collection_failures():
+    """An empty run must say why it is empty, not just show missing sections."""
+    from app.core.analyzer import SocialMediaAnalyzer
+
+    coverage = SocialMediaAnalyzer._build_coverage({}, {
+        "profile": None,
+        "content": [],
+        "errors": ["Profile error: CREDITS_EXHAUSTED: 402"],
+    })
+
+    assert coverage["measured"] == []
+    assert coverage["collection_errors"] == ["Profile error: CREDITS_EXHAUSTED: 402"]

@@ -247,3 +247,7 @@ tmp_*
 
 # Neon agent skills (installed via `neon skills`); skills-lock.json pins versions.
 .claude/skills/
+
+# Vercel CLI link state (project id + build env), written by `vercel link`.
+.vercel/
+frontend/.vercel/

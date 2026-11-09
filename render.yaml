@@ -1,0 +1,91 @@
+# Render Blueprint for Vanta — free plan only.
+#
+# Declares the one service that exists in the workspace, by name, so a Blueprint
+# sync adopts it rather than creating a duplicate:
+#   vanta-api - Flask API + built frontend assets (free plan)
+#
+# The database is Neon (pooled URI in DATABASE_URI), so Render provisions and
+# bills nothing for data.
+#
+# WHY THERE IS NO WORKER: Render background workers are not available on the
+# free plan (service creation returns 402 until a card is added). Without a
+# worker, setting REDIS_URL would make the app enqueue Celery jobs that nobody
+# consumes, so REDIS_URL is deliberately absent and analyses run on the app's
+# in-process threading fallback. The paid upgrade is at the bottom of this file.
+#
+# Secrets are `sync: false`: Render prompts for each value once in the dashboard
+# and stores it. They are never written into this file or the repo.
+
+envVarGroups:
+  - name: vanta-secrets
+    envVars:
+      - key: DATABASE_URI
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: SCRAPECREATORS_API_KEY
+        sync: false
+      - key: SCRAPECREATORS_BASE_URL
+        sync: false
+      - key: APIFY_API_TOKEN
+        sync: false
+      - key: NEWSAPI_KEY
+        sync: false
+      - key: GOOGLE_FACT_CHECK_API_KEY
+        sync: false
+      # Policy: special-category inference stays closed in production.
+      - key: ALLOW_SPECIAL_CATEGORY_INFERENCE
+        value: "false"
+      # Comma-separated origins allowed to call /api/* (the Vercel frontend).
+      - key: CORS_ORIGINS
+        sync: false
+
+services:
+  - type: web
+    name: vanta-api
+    runtime: python
+    plan: free
+    region: oregon
+    repo: https://github.com/fxinfo24/Vanta
+    branch: main
+    healthCheckPath: /api/health
+    # Quote the factory target: unquoted parentheses are a shell syntax error.
+    # 1 worker + threads keeps the process inside the free instance's 512 MB.
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -b 0.0.0.0:$PORT --timeout 300 --workers 1 --threads 4 "app.web.app:create_app()"
+    envVars:
+      - fromGroup: vanta-secrets
+      - key: FLASK_ENV
+        value: production
+
+# ---------------------------------------------------------------------------
+# Paid upgrade, deliberately commented out so a Blueprint sync stays free:
+#
+# services:
+#   - type: worker                 # background workers require a paid plan
+#     name: vanta-worker
+#     runtime: python
+#     plan: starter
+#     region: oregon
+#     repo: https://github.com/fxinfo24/Vanta
+#     branch: main
+#     buildCommand: pip install -r requirements.txt
+#     startCommand: celery -A app.core.tasks worker --pool=solo --beat --loglevel=info --queues=analysis,data
+#     envVars:
+#       - fromGroup: vanta-secrets
+#       - key: REDIS_URL
+#         fromService: {type: keyvalue, name: vanta-redis, property: connectionString}
+#
+#   - type: keyvalue               # free; only useful once the worker exists
+#     name: vanta-redis
+#     plan: free
+#     region: oregon
+#     ipAllowList: []
+#
+# Then also give vanta-api the same REDIS_URL reference so it enqueues instead of
+# running analyses in-process.
+# ---------------------------------------------------------------------------

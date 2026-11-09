@@ -287,7 +287,10 @@ class DeepDossierCollector:
             'username': username,
             'collected_at': datetime.utcnow().isoformat(),
             'profile': None,
-            'recent_content': [],
+            # Canonical key: every downstream analyzer and the coverage report
+            # read `content`. A quick scan used to write `recent_content`, so
+            # collected posts were silently analysed as zero posts.
+            'content': [],
             'errors': [],
             'collection_time_seconds': 0,
         }
@@ -305,6 +308,18 @@ class DeepDossierCollector:
                 result['profile'] = profile_method(username)
                 logger.info(f"Profile collected for {username}")
         except Exception as e:
+            # Same credits-exhausted fallback the deep path uses, so a quick run
+            # does not come back empty while a working provider is configured.
+            if platform == 'facebook' and 'CREDITS_EXHAUSTED' in str(e):
+                logger.warning(f"ScrapeCreators credits exhausted for {username}; trying Apify Facebook fallback...")
+                if self._apify_facebook_fallback(username, result):
+                    result['errors'].append('ScrapeCreators credits exhausted; served via Apify fallback')
+                    result['collection_time_seconds'] = round(time.time() - self.collection_start_time, 2)
+                    logger.info(f"Quick scan completed via Apify fallback with {len(result['content'])} items")
+                    return result
+                result['errors'].append(f"Profile error (credits exhausted, Apify fallback failed): {str(e)}")
+                result['collection_time_seconds'] = round(time.time() - self.collection_start_time, 2)
+                return result
             result['errors'].append(f"Profile error: {str(e)}")
             logger.warning(f"Failed to get profile for {username}: {e}")
         
@@ -313,8 +328,8 @@ class DeepDossierCollector:
             if config.get('content_method'):
                 content_method = getattr(self.client, config['content_method'], None)
                 if content_method:
-                    result['recent_content'] = content_method(username, count=10)
-                    logger.info(f"Collected {len(result['recent_content'])} recent items")
+                    result['content'] = content_method(username, count=10)
+                    logger.info(f"Collected {len(result['content'])} recent items")
         except Exception as e:
             result['errors'].append(f"Content error: {str(e)}")
             logger.warning(f"Failed to get content for {username}: {e}")
