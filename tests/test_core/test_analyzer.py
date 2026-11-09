@@ -131,3 +131,42 @@ def test_export_unsupported_format(analyzer, tmp_path):
         analyzer.export_results({}, str(tmp_path / "test.txt"))
 
     assert "Unsupported export format" in str(exc_info.value)
+
+
+def test_benchmark_reports_insufficient_sample_instead_of_accuracy():
+    """A tiny labelled set must not produce a quotable accuracy figure."""
+    from app.core.authenticity import evaluate_authenticity_benchmark
+
+    labels = [
+        {"platform": "facebook", "profile_id": "a", "is_inauthentic": False,
+         "label_source": "official-organisation-account"},
+        {"platform": "facebook", "profile_id": "b", "is_inauthentic": True,
+         "label_source": "platform-takedown-notice"},
+    ]
+    scored = [
+        {"platform": "facebook", "profile_id": "a", "bot_likelihood": 0.1},
+        {"platform": "facebook", "profile_id": "b", "bot_likelihood": 0.8},
+    ]
+
+    report = evaluate_authenticity_benchmark(scored, labels)
+
+    assert report["n"] == 2
+    assert report["usable"] is False
+    assert report["confusion"] == {"tp": 1, "fp": 0, "fn": 0, "tn": 1}
+    assert any("below 20" in w for w in report["warnings"])
+
+
+def test_benchmark_handles_unlabelled_and_missing_scores():
+    """Accounts without a label or without a score are skipped, not counted."""
+    from app.core.authenticity import evaluate_authenticity_benchmark
+
+    report = evaluate_authenticity_benchmark(
+        [{"platform": "facebook", "profile_id": "unknown", "bot_likelihood": 0.4},
+         {"platform": "facebook", "profile_id": "noscore", "bot_likelihood": None}],
+        [{"platform": "facebook", "profile_id": "noscore", "is_inauthentic": False,
+          "label_source": "official-organisation-account"}],
+    )
+
+    assert report["n"] == 0
+    assert report["usable"] is False
+    assert report["rows"] == []

@@ -9,6 +9,7 @@ import {
   ArrowRightOnRectangleIcon,
 } from '@heroicons/react/24/outline';
 import { useAuth } from '@/hooks/useAuth';
+import { apiService } from '@/services/api';
 
 const Layout: React.FC = () => {
   const navigate = useNavigate();
@@ -16,6 +17,25 @@ const Layout: React.FC = () => {
   const { user, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [budget, setBudget] = useState<any>(null);
+
+  // Last balance the data provider reported. Shown because a run that cannot
+  // be paid for is now refused, and the user deserves to see why beforehand.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await apiService.getProviderUsage();
+        if (!cancelled && res.success) setBudget(res.data?.scrapecreators || null);
+      } catch {
+        /* meter is informational; never block the UI on it */
+      }
+    };
+    load();
+    const timer = setInterval(load, 60000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [user, location.pathname]);
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -93,6 +113,21 @@ const Layout: React.FC = () => {
                 <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse shadow-[0_0_10px_#4ade80]" />
                 <span className="text-xs font-medium text-primary-200">System Online</span>
               </div>
+              {budget && budget.known && (
+                <div
+                  title={`${budget.message}${budget.observed_at ? ` Last observed ${budget.observed_at}.` : ''}`}
+                  className={`hidden sm:flex px-3 py-1.5 rounded-full border items-center space-x-2 ${
+                    budget.enough
+                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200'
+                      : 'bg-rose-500/10 border-rose-500/25 text-rose-200'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-current opacity-70" />
+                  <span className="text-xs font-medium">
+                    {budget.remaining} credits · ~{budget.runs_left} {budget.runs_left === 1 ? 'run' : 'runs'} left
+                  </span>
+                </div>
+              )}
               {/* Profile menu */}
               <div className="relative" ref={menuRef}>
                 <button

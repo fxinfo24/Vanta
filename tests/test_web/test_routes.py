@@ -15,7 +15,12 @@ from app.web.routes.views import views_bp
 @pytest.fixture
 def app():
     """Create app fixture for testing"""
-    app = create_app({"TESTING": True, "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:"})
+    app = create_app({
+        "TESTING": True,
+        "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+        # Do not inherit this machine's recorded provider balance.
+        "PROVIDER_USAGE_PATH": "/nonexistent/vanta_provider_usage.json",
+    })
 
     # Register the views blueprint if it's not already registered
     if "views" not in [bp.name for bp in app.blueprints.values()]:
@@ -666,3 +671,28 @@ def test_auth_cross_user_isolation(app):
     assert resp.status_code == 200
     data = json.loads(resp.data)
     assert task_id not in [t["id"] for t in data["tasks"]]
+
+
+def test_analyse_blocked_when_provider_credits_exhausted(client, app, tmp_path, monkeypatch):
+    """A run the provider balance cannot cover is refused with a clear reason."""
+    import json as _json
+
+    usage = tmp_path / "usage.json"
+    usage.write_text(_json.dumps({"scrapecreators": {"credits_remaining": 2,
+                                                    "observed_at": "2026-11-09T00:00:00Z"}}))
+    app.config["PROVIDER_USAGE_PATH"] = str(usage)
+
+    response = client.post(
+        "/api/analyze",
+        json={"platform": "facebook", "profile_id": "someone", "mode": "deep"},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 402
+    body = _json.loads(response.data)
+    assert "credit" in body["error"].lower()
+    assert body["budget"]["enough"] is False
+
+    # Nothing was queued for this profile by the blocked request.
+    from app.web.models import Task
+    assert Task.query.filter_by(profile_id="someone").count() == 0

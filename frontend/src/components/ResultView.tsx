@@ -26,6 +26,7 @@ interface AnalysisResult {
   metadata?: any;
   connected_accounts?: any[];
   raw_dossier?: any;
+  data_coverage?: any;
 }
 
 const ResultView: React.FC = () => {
@@ -168,8 +169,41 @@ const ResultView: React.FC = () => {
         </div>
       </div>
 
+      {results.data_coverage && <CoverageStrip coverage={results.data_coverage} />}
+
       {renderTabContent()}
 
+    </div>
+  );
+};
+
+// What every tab below was actually computed from. Shown once, above the tabs,
+// because a section with no inputs should not read like a finding.
+const CoverageStrip = ({ coverage }: { coverage: any }) => {
+  const measured: any[] = coverage.measured || [];
+  const missing: any[] = coverage.not_measured || [];
+  const gaps: string[] = coverage.missing_inputs || [];
+  const counts = coverage.counts || {};
+  return (
+    <div className="glass-card rounded-2xl p-4 mt-6">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="uppercase tracking-wider text-white/40 mr-1">Evidence coverage</span>
+        {measured.map((m: any) => (
+          <span key={m.section} title={m.basis} className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-200 border border-emerald-500/20">
+            {m.section}
+          </span>
+        ))}
+        {missing.map((m: any) => (
+          <span key={m.section} title={m.basis} className="px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-200 border border-rose-500/20">
+            {m.section} — not measured
+          </span>
+        ))}
+      </div>
+      <div className="text-[11px] text-white/40 mt-2">
+        Based on {counts.posts ?? 0} posts ({counts.posts_with_engagement ?? 0} with engagement metrics),{' '}
+        {counts.comments ?? 0} comments
+        {gaps.length > 0 && <> · not collected: {gaps.join(', ')}</>}
+      </div>
     </div>
   );
 };
@@ -226,6 +260,88 @@ const NetworkTab = ({ results }: { results: AnalysisResult }) => {
       ) : (
         <div className="flex-1 flex items-center justify-center text-white/40 italic p-6 text-center">
           No network data available for this profile.
+        </div>
+      )}
+    </div>
+  );
+};
+
+const _historyDate = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString() : '—');
+const _delta = (v: any, suffix = '') => {
+  if (!v || v.change == null) return <span className="text-white/40">no comparable data</span>;
+  const up = v.change > 0;
+  const flat = v.change === 0;
+  return (
+    <span className={flat ? 'text-white/50' : up ? 'text-emerald-300' : 'text-rose-300'}>
+      {flat ? 'unchanged' : `${up ? '+' : ''}${v.change}${suffix}`}
+      {!flat && v.change_percent != null && <span className="text-white/40"> ({v.change_percent > 0 ? '+' : ''}{v.change_percent}%)</span>}
+    </span>
+  );
+};
+
+const HistoryPanel = ({ results }: { results: AnalysisResult }) => {
+  const history = (results as any).history;
+  const changes = (results as any).changes;
+  if (!history || !history.count || history.count < 2) return null;
+
+  const rows: Array<[string, any]> = [
+    ['Followers', changes?.followers],
+    ['Engagement rate', changes?.engagement_rate_percent],
+    ['Bot likelihood', changes?.bot_likelihood],
+    ['Trust score', changes?.trust_score],
+  ];
+
+  return (
+    <div className="glass-card p-6 rounded-2xl md:col-span-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+        <h3 className="text-xl font-bold text-white">History &amp; changes</h3>
+        <span className="text-xs text-white/40">
+          {history.count} runs · {_historyDate(history.first_collected_at)} → {_historyDate(history.latest_collected_at)}
+        </span>
+      </div>
+      <p className="text-xs text-white/40 mb-4">
+        Compared with the previous run{changes?.from_task_id ? ` (task #${changes.from_task_id})` : ''}.
+      </p>
+
+      {changes ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {rows.map(([label, value]) => (
+            <div key={String(label)} className="rounded-xl bg-white/5 border border-white/10 p-3">
+              <div className="text-[11px] uppercase tracking-wider text-white/40">{label}</div>
+              <div className="text-sm mt-1 text-white/85">
+                {value?.current != null ? value.current : '—'} <span className="text-xs">{_delta(value)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-sm text-white/50">First recorded run — nothing to compare yet.</div>
+      )}
+
+      {changes && (
+        <div className="mt-4 space-y-1 text-xs">
+          {changes.risk && (
+            <div className="text-white/60">
+              Risk: <span className="text-white/85">{changes.risk.previous ?? 'unknown'}</span>
+              {' → '}<span className="text-white/85">{changes.risk.current ?? 'unknown'}</span>
+              {changes.risk.changed ? '' : ' (unchanged)'}
+            </div>
+          )}
+          {changes.political_label?.changed && (
+            <div className="text-amber-200/80">
+              Political label changed: {changes.political_label.previous} → {changes.political_label.current}
+              <span className="text-white/40"> — labels depend on the sample, so treat a shift between runs as provisional.</span>
+            </div>
+          )}
+          {changes.content?.coverage_note && (
+            <div className="text-amber-200/80">{changes.content.coverage_note}</div>
+          )}
+          {changes.content?.comparable && (
+            <div className="text-white/60">
+              Posts: {changes.content.new_count} new · {changes.content.removed_count} no longer present ·{' '}
+              {changes.content.retained_count} retained
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -319,6 +435,8 @@ const OverviewTab = ({ results }: { results: AnalysisResult; task: any }) => (
         <ProgressBar label="Negative" value={results.sentiment?.negative} color="bg-red-500" />
       </div>
     </div>
+
+    <HistoryPanel results={results} />
 
     {/* Digital Footprint / Cross Platform */}
     <div className="glass-card p-6 rounded-2xl md:col-span-3">

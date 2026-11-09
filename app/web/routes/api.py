@@ -383,6 +383,32 @@ def run_analysis(task_id: int, platform: str, profile_id: str, app=None, mode: s
                 # File persistence is best-effort; DB persistence is canonical
                 task.result_path = None
 
+            # Record a comparable point-in-time snapshot. Runs that collected
+            # nothing are skipped so a failed scrape never bends the trend line.
+            try:
+                from app.web.models.dossier import DossierSnapshot
+
+                exists = DossierSnapshot.query.filter_by(task_id=task.id).first()
+                if not exists:
+                    snapshot = DossierSnapshot.build(
+                        task_id=task.id,
+                        platform=task.platform,
+                        username=result.get("profile_info", {}).get("username") or task.profile_id,
+                        result=result,
+                        collection_mode=mode,
+                    )
+                    if snapshot is not None:
+                        db.session.add(snapshot)
+                        db.session.commit()
+                        logger.info(
+                            f"Stored snapshot {snapshot.id} for task {task.id} "
+                            f"({task.platform}/{snapshot.username})"
+                        )
+            except Exception as snap_err:
+                # History is additive: never fail a completed analysis over it.
+                db.session.rollback()
+                logger.error(f"Snapshot capture failed for task {task.id}: {snap_err}", exc_info=True)
+
             # Update task as complete
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.utcnow()
@@ -404,6 +430,54 @@ def run_analysis(task_id: int, platform: str, profile_id: str, app=None, mode: s
             reset_user_context(_ctx_token)
 
 
+def _provider_budget(mode: str) -> dict:
+    """Describe whether the provider balance can cover one run of ``mode``.
+
+    The number is the last value the provider reported, so it can be stale by
+    one run; the check is deliberately conservative (block only below cost).
+    """
+    from app.core.scrape_client import RUN_CREDIT_ESTIMATES, read_credits
+
+    observed = read_credits(current_app.config.get("PROVIDER_USAGE_PATH")) or {}
+    remaining = observed.get("credits_remaining")
+    needed = RUN_CREDIT_ESTIMATES.get(mode, RUN_CREDIT_ESTIMATES["deep"])
+    if remaining is None:
+        return {
+            "known": False,
+            "remaining": None,
+            "needed": needed,
+            "enough": True,  # unknown balance must not block a legitimate run
+            "observed_at": None,
+            "message": "Provider balance has not been reported yet in this install.",
+        }
+    enough = remaining >= needed
+    return {
+        "known": True,
+        "remaining": remaining,
+        "needed": needed,
+        "enough": enough,
+        "runs_left": int(remaining // needed),
+        "observed_at": observed.get("observed_at"),
+        "message": (
+            f"{remaining} credit(s) remaining; this run needs about {needed}."
+            if enough else
+            f"Only {remaining} credit(s) remaining but this run needs about {needed}. "
+            "Top up the data provider before starting it."
+        ),
+    }
+
+
+@api_bp.route("/provider/usage", methods=["GET"])
+def provider_usage():
+    """Last observed provider balance and what the next runs would cost."""
+    from app.core.scrape_client import RUN_CREDIT_ESTIMATES
+
+    return jsonify({
+        "scrapecreators": _provider_budget("deep"),
+        "estimated_cost_per_run": RUN_CREDIT_ESTIMATES,
+    })
+
+
 @api_bp.route("/analyze", methods=["POST"])
 def start_analysis():
     """Start a new profile analysis task"""
@@ -421,6 +495,17 @@ def start_analysis():
         mode = load_user_context(_uid())["default_mode"]
     if mode not in ("quick", "deep"):
         return jsonify({"error": "mode must be 'quick' or 'deep'"}), 400
+
+    # Pre-flight: never start a run the provider balance cannot cover. The
+    # failure mode this prevents is a half-collected dossier that looks like an
+    # account with almost no content.
+    budget = _provider_budget(mode)
+    if not budget["enough"]:
+        return jsonify({
+            "error": "Insufficient data-provider credits",
+            "detail": budget["message"],
+            "budget": budget,
+        }), 402
 
     # Create new task (Task.__init__ only accepts platform and profile_id)
     # user_id is passed through kwargs and stamped as the owner.
@@ -613,6 +698,102 @@ def retry_task(task_id):
         return jsonify({"error": "Failed to retry task", "details": str(e)}), 500
 
 
+def _subject_snapshots(task, limit=12):
+    """Snapshots of the same subject (owner + platform + resolved identity).
+
+    Matching only on the requested identifier split a single account into two
+    timelines whenever it was looked up by handle in one run and by numeric id
+    in another. Identity is therefore the resolved username (or the requested
+    id, for runs whose username could not be resolved). Owner scoping lives in
+    the join, so one tenant never sees another's timeline.
+    """
+    from app.web.models.dossier import DossierSnapshot
+    from sqlalchemy import func, or_
+
+    requested = (task.profile_id or "").lower()
+    query = (
+        db.session.query(DossierSnapshot.snapshot_data, DossierSnapshot.created_at,
+                         DossierSnapshot.task_id, DossierSnapshot.collection_mode,
+                         DossierSnapshot.id, DossierSnapshot.username)
+        .join(Task, Task.id == DossierSnapshot.task_id)
+        .filter(Task.platform == task.platform)
+        .filter(or_(
+            func.lower(DossierSnapshot.username) == requested,
+            func.lower(Task.profile_id) == requested,
+        ))
+    )
+    query = (query.filter(Task.user_id.is_(None)) if task.user_id is None
+             else query.filter(Task.user_id == task.user_id))
+    rows = query.order_by(DossierSnapshot.created_at.asc()).all()
+    if not rows and task.profile_id:
+        # Nothing matched on identity: fall back to the resolved username of
+        # this task's own snapshot so a rename still yields its own timeline.
+        own = DossierSnapshot.query.filter_by(task_id=task.id).first()
+        if own is not None:
+            query = (db.session.query(DossierSnapshot.snapshot_data, DossierSnapshot.created_at,
+                                      DossierSnapshot.task_id, DossierSnapshot.collection_mode,
+                                      DossierSnapshot.id, DossierSnapshot.username)
+                     .join(Task, Task.id == DossierSnapshot.task_id)
+                     .filter(Task.platform == task.platform)
+                     .filter(func.lower(DossierSnapshot.username) == (own.username or "").lower()))
+            query = (query.filter(Task.user_id.is_(None)) if task.user_id is None
+                     else query.filter(Task.user_id == task.user_id))
+            rows = query.order_by(DossierSnapshot.created_at.asc()).all()
+    return rows[-limit:]
+
+
+def _with_history(task, payload):
+    """Attach this subject's timeline and the change since the previous run."""
+    from app.web.models.dossier import DossierSnapshot
+
+    if not isinstance(payload, dict):
+        return payload
+    try:
+        rows = _subject_snapshots(task)
+    except Exception as e:  # history must never break result delivery
+        logger.error(f"History lookup failed for task {task.id}: {e}", exc_info=True)
+        return payload
+    if not rows:
+        return payload
+
+    history = [
+        {
+            "snapshot_id": row.id,
+            "task_id": row.task_id,
+            "collected_at": row.created_at.isoformat() if row.created_at else None,
+            "mode": row.collection_mode,
+            "followers": (row.snapshot_data or {}).get("followers"),
+            "engagement_rate_percent": (row.snapshot_data or {}).get("engagement_rate_percent"),
+            "posts_measured": (row.snapshot_data or {}).get("posts_measured"),
+            "bot_likelihood": (row.snapshot_data or {}).get("bot_likelihood"),
+            "trust_score": (row.snapshot_data or {}).get("trust_score"),
+            "risk_assessment": (row.snapshot_data or {}).get("risk_assessment"),
+            "political_label": (row.snapshot_data or {}).get("political_label"),
+        }
+        for row in rows
+    ]
+
+    out = dict(payload)
+    out["history"] = {
+        "count": len(history),
+        "snapshots": history,
+        "first_collected_at": history[0]["collected_at"],
+        "latest_collected_at": history[-1]["collected_at"],
+    }
+    if len(history) >= 2:
+        previous, current = rows[-2], rows[-1]
+        delta = DossierSnapshot.compute_delta(current.snapshot_data, previous.snapshot_data)
+        delta["from_task_id"] = previous.task_id
+        delta["to_task_id"] = current.task_id
+        try:
+            times = [r.created_at for r in rows[-2:] if r.created_at]
+            delta["elapsed_hours"] = round((times[-1] - times[-2]).total_seconds() / 3600, 1) if len(times) == 2 else None
+        except Exception:
+            delta["elapsed_hours"] = None
+        out["changes"] = delta
+    return out
+
+
 @api_bp.route("/tasks/<int:task_id>/results", methods=["GET"])
 def get_results(task_id):
     """Get analysis results for a completed task"""
@@ -627,14 +808,14 @@ def get_results(task_id):
     # Canonical source: DB
     # Canonical source: DB - Only check if attribute exists (compatibility)
     if hasattr(task, 'result_data') and task.result_data is not None:
-        return jsonify(task.result_data)
+        return jsonify(_with_history(task, task.result_data))
 
     # Backward-compatible fallback: file
     if task.result_path and Path(task.result_path).exists():
         try:
             with open(task.result_path, "r") as f:
                 results = json.load(f)
-            return jsonify(results)
+            return jsonify(_with_history(task, results))
         except Exception as e:
             logger.error(f"Error reading results for task {task_id}: {e}")
 

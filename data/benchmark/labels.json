@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "created": "2026-11-09",
+  "status": "seed",
+  "methodology": "Each label rests on a checkable public fact, not on judgement. 'authentic' entries are official institutional accounts (the organisation verifies its own identity). 'inauthentic' entries must come from a documented source (platform takedown notice or published research dataset) and record that source in label_source; none are included yet because no such list has been verified against these account ids.",
+  "run_requirements": {
+    "min_sample": 20,
+    "credit_cost_per_deep_run": 14,
+    "note": "Scoring this set needs one collection run per account. 6 seed entries require ~84 provider credits, which exceeds the balance available when this file was written. The set is therefore NOT yet scored and no accuracy figure exists."
+  },
+  "accounts": [
+    {
+      "platform": "facebook",
+      "profile_id": "bbcnews",
+      "expected_name": "BBC News",
+      "is_inauthentic": false,
+      "label_source": "official-organisation-account",
+      "notes": "Verified news organisation publishing under its own brand."
+    },
+    {
+      "platform": "facebook",
+      "profile_id": "NASA",
+      "expected_name": "NASA",
+      "is_inauthentic": false,
+      "label_source": "official-organisation-account",
+      "notes": "Official US federal agency account."
+    },
+    {
+      "platform": "facebook",
+      "profile_id": "unicef",
+      "expected_name": "UNICEF",
+      "is_inauthentic": false,
+      "label_source": "official-organisation-account",
+      "notes": "Official UN agency account."
+    },
+    {
+      "platform": "facebook",
+      "profile_id": "100000537579893",
+      "expected_name": "Arif Aziz",
+      "is_inauthentic": false,
+      "label_source": "manually-reviewed-real-person",
+      "notes": "Analysed across tasks 7-16; consistent first-person Bengali posting history, no coordination evidence. Labelled authentic by manual review - a weak label source, recorded as such."
+    }
+  ],
+  "exclusions": [
+    "No 'inauthentic' examples are shipped: inventing a bot label would defeat the purpose of the benchmark. Add them from a platform transparency report or a peer-reviewed dataset, recording the citation in label_source."
+  ]
+}

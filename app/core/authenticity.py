@@ -550,3 +550,94 @@ class ProfileAuthenticityAnalyzer:
             flags.append("Suspicious language patterns")
 
         return confidence_level, flags
+
+
+# ---------------------------------------------------------------------------
+# Benchmark evaluation
+# ---------------------------------------------------------------------------
+# A score nobody can falsify is marketing, not a measurement. This turns a
+# labelled set of accounts into precision/recall for the authenticity verdict,
+# and refuses to report a number when the sample is too small to mean anything.
+
+BENCHMARK_MIN_SAMPLE = 20
+
+
+def evaluate_authenticity_benchmark(scored, labels, threshold=0.5):
+    """Score predictions against ground-truth labels.
+
+    ``scored``  - iterable of dicts with platform/profile_id/identifier and a
+                  numeric ``bot_likelihood``.
+    ``labels``  - iterable of dicts with the same identifier and a boolean
+                  ``is_inauthentic`` plus ``label_source`` describing why it is
+                  trusted.
+
+    Returns per-account rows, a confusion matrix for the "inauthentic" class,
+    and explicit warnings. No metric is reported when there are no usable rows.
+    """
+    label_map = {}
+    for row in labels or []:
+        key = (str(row.get("platform", "")).lower(), str(row.get("profile_id", "")).lower())
+        label_map[key] = row
+
+    rows, warnings = [], []
+    for item in scored or []:
+        key = (str(item.get("platform", "")).lower(), str(item.get("profile_id", "")).lower())
+        truth = label_map.get(key)
+        likelihood = item.get("bot_likelihood")
+        if truth is None or not isinstance(likelihood, (int, float)):
+            continue
+        predicted = likelihood >= threshold
+        actual = bool(truth.get("is_inauthentic"))
+        rows.append({
+            "platform": key[0],
+            "profile_id": key[1],
+            "bot_likelihood": round(float(likelihood), 3),
+            "predicted_inauthentic": predicted,
+            "actual_inauthentic": actual,
+            "correct": predicted == actual,
+            "label_source": truth.get("label_source"),
+        })
+
+    if not rows:
+        return {
+            "n": 0,
+            "usable": False,
+            "threshold": threshold,
+            "rows": [],
+            "warnings": ["No scored accounts matched a label; nothing can be measured yet."],
+        }
+
+    tp = sum(1 for r in rows if r["predicted_inauthentic"] and r["actual_inauthentic"])
+    fp = sum(1 for r in rows if r["predicted_inauthentic"] and not r["actual_inauthentic"])
+    fn = sum(1 for r in rows if not r["predicted_inauthentic"] and r["actual_inauthentic"])
+    tn = sum(1 for r in rows if not r["predicted_inauthentic"] and not r["actual_inauthentic"])
+
+    precision = round(tp / (tp + fp), 3) if (tp + fp) else None
+    recall = round(tp / (tp + fn), 3) if (tp + fn) else None
+    f1 = (round(2 * precision * recall / (precision + recall), 3)
+          if precision and recall else None)
+
+    if len(rows) < BENCHMARK_MIN_SAMPLE:
+        warnings.append(
+            f"Only {len(rows)} labelled account(s); below {BENCHMARK_MIN_SAMPLE} the "
+            "figures are indicative at best and must not be quoted as accuracy."
+        )
+    sources = {r["label_source"] for r in rows if r.get("label_source")}
+    if len(sources) <= 1:
+        warnings.append(
+            "Labels come from a single source family, so agreement partly reflects that "
+            "source's selection criteria rather than independent ground truth."
+        )
+
+    return {
+        "n": len(rows),
+        "usable": len(rows) >= BENCHMARK_MIN_SAMPLE,
+        "threshold": threshold,
+        "confusion": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "accuracy": round((tp + tn) / len(rows), 3),
+        "rows": rows,
+        "warnings": warnings,
+    }

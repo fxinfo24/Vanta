@@ -3,6 +3,7 @@ ScrapeCreators API Client for Social Media Data Collection
 Universal social media scraping using ScrapeCreators API
 """
 
+import json
 import os
 import requests
 import time
@@ -14,6 +15,59 @@ import logging
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Provider usage tracking
+# ---------------------------------------------------------------------------
+# Successful responses carry `credits_remaining`. We record the last observed
+# value so the app can tell a user how many runs their balance can cover
+# BEFORE spending the credits. It is always labelled as an observation with a
+# timestamp, never presented as a live balance.
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_USAGE_PATH = os.path.join(_PROJECT_ROOT, "data", "provider_usage.json")
+
+# Measured on real Facebook deep runs: ~13-14 calls each. A quick run needs the
+# profile plus one page of posts.
+RUN_CREDIT_ESTIMATES = {"deep": 14, "quick": 4}
+
+
+def record_credits(remaining: Any) -> None:
+    """Persist the last observed provider balance (best effort)."""
+    if not isinstance(remaining, (int, float)):
+        return
+    try:
+        os.makedirs(os.path.dirname(_USAGE_PATH), exist_ok=True)
+        payload = {}
+        if os.path.exists(_USAGE_PATH):
+            try:
+                with open(_USAGE_PATH, "r") as fh:
+                    payload = json.load(fh) or {}
+            except Exception:
+                payload = {}
+        payload["scrapecreators"] = {
+            "credits_remaining": int(remaining),
+            "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        with open(_USAGE_PATH, "w") as fh:
+            json.dump(payload, fh)
+    except Exception as exc:  # usage tracking must never break collection
+        logger.debug(f"Could not record provider credits: {exc}")
+
+
+def read_credits(path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Return the last observed balance, if any.
+
+    ``path`` lets a caller (or a test) point at a different usage file instead
+    of inheriting whatever this machine last recorded.
+    """
+    try:
+        with open(path or _USAGE_PATH, "r") as fh:
+            return (json.load(fh) or {}).get("scrapecreators")
+    except Exception:
+        return None
+
 
 class ScrapeCreatorsError(Exception):
     """ScrapeCreators API related errors"""
@@ -94,7 +148,12 @@ class ScrapeCreatorsClient:
             elif response.status_code != 200:
                 raise ScrapeCreatorsError(f"API error: {response.status_code} - {response.text}")
                 
-            return response.json()
+            data = response.json()
+            try:
+                record_credits(data.get("credits_remaining"))
+            except Exception:
+                pass
+            return data
             
         except requests.RequestException as e:
             raise ScrapeCreatorsError(f"Request failed: {str(e)}")

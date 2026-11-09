@@ -157,6 +157,9 @@ def app():
                 "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
                 "WTF_CSRF_ENABLED": False,
                 "PRESERVE_CONTEXT_ON_EXCEPTION": False,
+                # Never inherit this machine's recorded provider balance: a low
+                # local balance must not fail unrelated route tests.
+                "PROVIDER_USAGE_PATH": "/nonexistent/vanta_provider_usage.json",
             }
         )
 

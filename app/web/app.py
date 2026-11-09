@@ -42,15 +42,29 @@ def create_app(test_config=None):
     )
 
     # Create data directory if it doesn't exist
-    data_dir = os.path.join(os.getcwd(), "data")
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    data_dir = os.path.join(project_root, "data")
     os.makedirs(data_dir, exist_ok=True)
     db_path = os.path.join(data_dir, "vanta.db")
-    
+
+    # A relative SQLite URI is resolved by SQLAlchemy against Flask's instance/
+    # folder, so "sqlite:///data/x.db" in .env became instance/data/x.db (which
+    # does not exist) and failed only in processes that load .env before this
+    # factory. Anchor relative paths to the project root instead.
+    def _absolute_sqlite_uri(uri: str) -> str:
+        prefix = "sqlite:///"
+        if not uri or not uri.startswith(prefix) or uri.startswith("sqlite:////"):
+            return uri
+        rel = uri[len(prefix):]
+        if os.path.isabs(rel) or rel == ":memory:":
+            return uri
+        return f"sqlite:///{os.path.join(project_root, rel)}"
+
     # Load default configuration
     app.config.from_mapping(
         SECRET_KEY=os.environ.get("SECRET_KEY", "dev-key-for-development-only"),
-        SQLALCHEMY_DATABASE_URI=os.environ.get(
-            "DATABASE_URI", f"sqlite:///{db_path}"
+        SQLALCHEMY_DATABASE_URI=_absolute_sqlite_uri(
+            os.environ.get("DATABASE_URI", f"sqlite:///{db_path}")
         ),
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         RESULTS_FOLDER=os.path.join(os.getcwd(), "data", "results"),

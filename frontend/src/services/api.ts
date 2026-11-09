@@ -269,6 +269,14 @@ class ApiService {
     } catch (e) { return this.handleError(e); }
   }
 
+  // Last observed data-provider balance and the credit cost of a run.
+  async getProviderUsage(): Promise<ApiResponse<any>> {
+    try {
+      const r = await this.api.get('/provider/usage');
+      return { success: true, data: r.data };
+    } catch (e) { return this.handleError(e); }
+  }
+
   // Settings + BYOK. Key material is write-only: responses carry only
   // per-provider status (configured / source / masked hint).
   async getSettings(): Promise<ApiResponse<any>> {

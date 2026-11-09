@@ -61,6 +61,74 @@ class SocialMediaAnalyzer:
             self._collector_cache[cache_key] = DataCollector(platform, rate_limit)
         return self._collector_cache[cache_key]
 
+    @staticmethod
+    def _build_coverage(results: Dict[str, Any], dossier: Dict[str, Any]) -> Dict[str, Any]:
+        """State, per tab, what was measured and what was missing.
+
+        Deterministic and computed from the dossier, so every section carries a
+        receipt about its own inputs instead of asking a model to police itself.
+        A section with no underlying data is reported as such rather than shown
+        as a finding.
+        """
+        from .platform_prompts import _content_availability
+
+        profile = (dossier or {}).get("profile") or {}
+        content = (dossier or {}).get("content") or []
+        stats = (dossier or {}).get("statistics") or {}
+        avail = _content_availability(content, profile)
+
+        metric_gaps = [
+            label for label, present in (
+                ("account age", profile.get("created_at")),
+                ("following count", profile.get("following_count")),
+                ("post count", profile.get("posts_count")),
+                ("follower/following lists", avail["has_network"]),
+                ("group membership", avail["has_groups"]),
+            ) if not present
+        ]
+
+        def section(name: str, payload: Any, basis: str, measured: bool) -> Dict[str, Any]:
+            return {
+                "section": name,
+                "basis": basis,
+                "status": "measured" if measured else "not_measured",
+            }
+
+        items = [
+            section("sentiment", results.get("sentiment"),
+                    f"{avail['n_items']} collected posts", avail["n_items"] > 0),
+            section("content", results.get("content_analysis"),
+                    f"{avail['n_items']} posts, {avail['engagement_items']} with engagement metrics",
+                    avail["n_items"] > 0),
+            section("authenticity", results.get("authenticity"),
+                    f"profile metrics + {avail['n_items']} posts",
+                    bool(profile) or avail["n_items"] > 0),
+            section("beliefs", results.get("belief_system"),
+                    f"post text from {avail['n_items']} items", avail["n_items"] > 0),
+            section("psychology", results.get("content_analysis"),
+                    f"writing samples from {avail['n_items']} items", avail["n_items"] > 0),
+            section("consumer", results.get("consumer_profile"),
+                    f"brand/product mentions in {avail['n_items']} posts",
+                    avail["n_items"] > 0),
+            section("lifestyle", results.get("behavioral_profile"),
+                    f"{avail['n_items']} posts + {stats.get('comments_collected', 0)} comments",
+                    avail["n_items"] > 0),
+            section("network", None,
+                    "follower/following samples", avail["has_network"]),
+        ]
+
+        return {
+            "measured": [i for i in items if i["status"] == "measured"],
+            "not_measured": [i for i in items if i["status"] != "measured"],
+            "missing_inputs": metric_gaps,
+            "counts": {
+                "posts": avail["n_items"],
+                "posts_with_engagement": avail["engagement_items"],
+                "comments": stats.get("comments_collected"),
+                "gendered_commenters": avail["gendered_commenters"],
+            },
+        }
+
     def analyze_profile(self, platform: str, profile_id: str, mode: str = "deep") -> Dict[str, Any]:
         """
         Perform complete analysis of a social media profile using Enhanced Engines (Phase 2 & 3)
@@ -161,6 +229,8 @@ class SocialMediaAnalyzer:
             # Save raw data if configured
             if self.config["output"]["save_raw_data"]:
                 results["raw_dossier"] = dossier_data
+
+            results["data_coverage"] = self._build_coverage(results, dossier_data)
 
             self.logger.info(f"Analysis completed for {profile_id}")
             return results

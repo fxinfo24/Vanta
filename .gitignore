@@ -74,6 +74,8 @@ secrets.json
 *.db-journal
 profilescope.db
 data/profilescope.db
+# Last observed provider balance: machine state, not source.
+data/provider_usage.json
 instance/profilescope.db
 *.sql
 *.dump
@@ -189,7 +191,10 @@ organizations/
 *.model
 *.pkl
 *.joblib
-models/
+# ML artefacts only: the bare rule `models/` also excluded the application's
+# own app/web/models package, leaving it untracked and unimportable on a clone.
+/models/
+app/**/checkpoints/
 checkpoints/
 cv_cache/
 image_cache/
