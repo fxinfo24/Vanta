@@ -20,6 +20,10 @@ interface Task {
   progress: number;
   created_at: string;
   message?: string;
+  // When the stored data was collected (not when the run was requested) and
+  // how many snapshots exist for this subject.
+  last_collected_at?: string | null;
+  history_depth?: number;
 }
 
 const TasksList: React.FC = () => {
@@ -254,10 +258,29 @@ const TasksList: React.FC = () => {
                         <h4 className="font-semibold text-white">{task.profile_id}</h4>
                         <span className="text-white/30 text-xs">#{task.id}</span>
                       </div>
-                      <div className="text-sm text-white/50 flex items-center gap-2">
-                        <span>{new Date(task.created_at).toLocaleDateString()}</span>
-                        <span>•</span>
+                      <div className="text-sm text-white/50 flex flex-wrap items-center gap-2">
                         <span className="capitalize">{task.platform}</span>
+                        <span>•</span>
+                        <span title="When this run was requested">
+                          requested {new Date(task.created_at).toLocaleDateString()}
+                        </span>
+                        <span>•</span>
+                        <span
+                          title="When the data behind these numbers was collected"
+                          className={task.last_collected_at ? '' : 'text-amber-400/80'}
+                        >
+                          {task.last_collected_at
+                            ? `data collected ${new Date(task.last_collected_at).toLocaleDateString()}`
+                            : 'no collected data'}
+                        </span>
+                        <span>•</span>
+                        <span title="Stored snapshots for this subject; trends need two">
+                          {!task.history_depth
+                            ? 'no snapshots yet'
+                            : task.history_depth === 1
+                              ? '1 snapshot — no trend yet'
+                              : `${task.history_depth} snapshots`}
+                        </span>
                       </div>
                     </div>
                   </div>

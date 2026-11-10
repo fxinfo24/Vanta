@@ -24,6 +24,8 @@ type Task = {
   message?: string;
   created_at?: string;
   createdAt?: string;
+  last_collected_at?: string | null;
+  history_depth?: number;
 };
 
 type VerificationClaim = { id: string; text: string; type?: string; checkworthiness?: number; post_id?: string };
@@ -214,6 +216,14 @@ const Dashboard: React.FC = () => {
                           </div>
                           <div className="text-xs text-white/40">
                             ID: {(t.profile_id ?? t.profileId) || 'N/A'}
+                          </div>
+                          <div className="text-xs text-white/30">
+                            {t.last_collected_at
+                              ? `collected ${new Date(t.last_collected_at).toLocaleDateString()}`
+                              : 'no data collected'}
+                            {t.history_depth && t.history_depth > 1
+                              ? ` · ${t.history_depth} snapshots`
+                              : ''}
                           </div>
                         </div>
                       </div>

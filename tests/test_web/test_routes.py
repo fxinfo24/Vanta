@@ -698,6 +698,56 @@ def test_analyse_blocked_when_provider_credits_exhausted(client, app, tmp_path, 
     assert Task.query.filter_by(profile_id="someone").count() == 0
 
 
+def test_list_tasks_reports_collection_age_and_history_depth(client, app):
+    """The list must distinguish a fresh run from one analysed long ago.
+
+    Request time says when the job ran, not how old the numbers are, and a
+    subject with one snapshot has no trend - both belong on the list itself.
+    """
+    from datetime import datetime, timedelta
+    from app.web.models import db, DossierSnapshot
+
+    with app.app_context():
+        old = Task(platform="facebook", profile_id="freshness_subject",
+                   user_id=app.config["TEST_USER_ID"])
+        old.status = TaskStatus.COMPLETED
+        db.session.add(old)
+        db.session.commit()
+        collected = datetime.utcnow() - timedelta(days=6)
+        db.session.add(DossierSnapshot(task_id=old.id, platform="facebook",
+                                       username="freshness_subject", created_at=collected,
+                                       snapshot_data={"followers": 10}))
+        # A second, separate run of the same subject: that is history depth 2.
+        newer = Task(platform="facebook", profile_id="freshness_subject",
+                     user_id=app.config["TEST_USER_ID"])
+        db.session.add(newer)
+        db.session.commit()
+        db.session.add(DossierSnapshot(task_id=newer.id, platform="facebook",
+                                       username="freshness_subject",
+                                       snapshot_data={"followers": 11}))
+        db.session.commit()
+
+    data = client.get("/api/tasks?platform=facebook").get_json()
+    rows = [t for t in data["tasks"] if t["profile_id"] == "freshness_subject"]
+
+    assert rows and all(t["history_depth"] == 2 for t in rows)
+    # Age comes from the newest snapshot of the subject, not from this task.
+    assert all(t["last_collected_at"] is not None for t in rows)
+    assert all(datetime.fromisoformat(t["last_collected_at"]) > collected for t in rows)
+
+    # A subject that never produced a snapshot reports zero, not a fake date.
+    from app.web.models import Task as TaskModel
+    with app.app_context():
+        empty = TaskModel(platform="facebook", profile_id="never_collected",
+                          user_id=app.config["TEST_USER_ID"])
+        db.session.add(empty)
+        db.session.commit()
+    data = client.get("/api/tasks?platform=facebook").get_json()
+    row = next(t for t in data["tasks"] if t["profile_id"] == "never_collected")
+    assert row["history_depth"] == 0
+    assert row["last_collected_at"] is None
+
+
 def test_delete_task_removes_task_and_snapshots(client, app):
     """Erasure must take the derived history with it, not just the row."""
     from app.web.models import db, DossierSnapshot

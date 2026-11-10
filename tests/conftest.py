@@ -188,6 +188,26 @@ def app():
         pytest.skip(f"Error setting up Flask app: {e}")
 
 
+@pytest.fixture(autouse=True)
+def _no_local_dossier_cache():
+    """Keep analyzer runs outside a fixture app context off the real database.
+
+    CLI/desktop runs fall back to the local `data/vanta.db` for their dossier
+    cache. A unit test that calls `analyze_profile` without the `app` fixture
+    would otherwise read - and write - the developer's actual database, which
+    makes test results depend on what the last local run collected. Tests that
+    exercise the cache install their own app explicitly.
+    """
+    import app.core.analyzer as analyzer_module
+
+    saved = (analyzer_module._CACHE_APP, analyzer_module._CACHE_APP_FAILED)
+    analyzer_module._CACHE_APP, analyzer_module._CACHE_APP_FAILED = None, True
+    try:
+        yield
+    finally:
+        analyzer_module._CACHE_APP, analyzer_module._CACHE_APP_FAILED = saved
+
+
 @pytest.fixture
 def client(app):
     """Create test client"""

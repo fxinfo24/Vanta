@@ -418,6 +418,11 @@ class DossierSnapshot(db.Model):
             },
         }
 
+# Cache scope for runs with no signed-in user: a CLI or desktop run belongs to
+# the operator of that machine, and every web/Celery user has a positive id.
+LOCAL_CACHE_OWNER = 0
+
+
 class DossierCache(db.Model):
     """Last collected raw dossier for one (user, platform, profile).
 

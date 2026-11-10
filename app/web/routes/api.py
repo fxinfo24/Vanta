@@ -720,9 +720,22 @@ def list_tasks():
     # Apply pagination
     tasks = query.order_by(Task.created_at.desc()).offset(offset).limit(limit).all()
 
+    try:
+        freshness = _subject_freshness(tasks)
+    except Exception as e:  # a stale label must never break the list
+        logger.error(f"Subject freshness lookup failed: {e}", exc_info=True)
+        freshness = {}
+
+    listed = []
+    for task in tasks:
+        row = task.to_dict()
+        row.update(freshness.get(task.id)
+                   or {"history_depth": 0, "last_collected_at": None})
+        listed.append(row)
+
     return jsonify(
         {
-            "tasks": [task.to_dict() for task in tasks],
+            "tasks": listed,
             "total": total,
             "offset": offset,
             "limit": limit,
@@ -853,6 +866,58 @@ def _subject_snapshots(task, limit=12):
                      else query.filter(Task.user_id == task.user_id))
             rows = query.order_by(DossierSnapshot.created_at.asc()).all()
     return rows[-limit:]
+
+
+def _subject_freshness(tasks):
+    """Collection age and history depth for each run on this page.
+
+    The list previously showed only when a run was *requested*, so a report
+    whose numbers were collected weeks ago looked identical to a fresh one, and
+    a subject with a single snapshot looked like a trend. Both facts are shown
+    on the list itself. Two grouped queries, not one per row.
+    """
+    from app.web.models.dossier import DossierSnapshot
+    from sqlalchemy import and_, func, or_
+
+    if not tasks:
+        return {}
+    ids = [t.id for t in tasks]
+    resolved = dict(
+        db.session.query(DossierSnapshot.task_id, DossierSnapshot.username)
+        .filter(DossierSnapshot.task_id.in_(ids)).all()
+    )
+    # Same identity rule as the timeline: the resolved username, or the
+    # requested id when the run could not resolve one.
+    keyed = {
+        t.id: (t.platform, ((resolved.get(t.id) or t.profile_id or "")).lower())
+        for t in tasks
+    }
+    conditions = [
+        and_(Task.platform == platform, func.lower(DossierSnapshot.username) == username)
+        for platform, username in set(keyed.values())
+    ]
+    query = (
+        db.session.query(Task.platform, func.lower(DossierSnapshot.username),
+                         func.count(DossierSnapshot.id),
+                         func.max(DossierSnapshot.created_at))
+        .join(Task, Task.id == DossierSnapshot.task_id)
+        .filter(or_(*conditions))
+        .group_by(Task.platform, func.lower(DossierSnapshot.username))
+    )
+    user_id = _uid()
+    query = (query.filter(Task.user_id.is_(None)) if user_id is None
+             else query.filter(Task.user_id == user_id))
+    grouped = {(platform, username): (count, last)
+               for platform, username, count, last in query.all()}
+
+    fresh = {}
+    for task in tasks:
+        count, last = grouped.get(keyed[task.id], (0, None))
+        fresh[task.id] = {
+            "history_depth": count,
+            "last_collected_at": last.isoformat() if last else None,
+        }
+    return fresh
 
 
 def _with_history(task, payload):

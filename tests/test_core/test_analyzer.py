@@ -388,6 +388,48 @@ def test_second_run_reuses_the_cached_dossier_instead_of_scraping(app, monkeypat
             reset_user_context(token)
 
 
+def test_cli_and_desktop_runs_use_an_operator_local_cache(monkeypatch):
+    """A run with no signed-in user still reuses its own collected dossier.
+
+    CLI and desktop runs execute without an app context or user id; before this
+    they collected every time, so re-running the same handle on the desktop paid
+    again for data the local database already held. No `app` fixture here on
+    purpose: an app context is exactly what this path does not have.
+    """
+    from flask import has_app_context
+    from app.web.app import create_app
+    import app.core.analyzer as analyzer_module
+    from app.core.analyzer import SocialMediaAnalyzer
+    from app.web.models import db
+    from app.web.models.dossier import (
+        DossierCache, LOCAL_CACHE_OWNER, get_cached_dossier,
+    )
+
+    local_app = create_app({
+        "TESTING": True,
+        "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+        "PROVIDER_USAGE_PATH": "/nonexistent/vanta_provider_usage.json",
+    })
+    with local_app.app_context():
+        db.create_all()
+
+    monkeypatch.setattr(analyzer_module, "_shared_cache_app", lambda: local_app)
+    assert not has_app_context()
+
+    analyzer = SocialMediaAnalyzer()
+    stored = {"profile": {"username": "local_subject"}, "content": [{"text": "collected"}],
+              "collected_at": "2026-11-09T10:00:00"}
+    analyzer._cache_store("facebook", "local_subject", stored)
+
+    with local_app.app_context():
+        row = db.session.query(DossierCache).filter_by(profile_id="local_subject").one()
+        assert row.user_id == LOCAL_CACHE_OWNER
+        # An operator-local entry is not visible to a signed-in web user.
+        assert get_cached_dossier(db.session, 7, "facebook", "local_subject") is None
+
+    assert analyzer._cache_lookup("facebook", "local_subject")["content"] == [{"text": "collected"}]
+
+
 def test_exhausted_credits_are_recorded_so_the_next_run_is_blocked(app):
     """A 402 must leave a zero balance behind, not just an error message."""
     from app.core.scrape_client import record_credits, read_credits

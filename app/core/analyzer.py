@@ -5,6 +5,7 @@ Main orchestrator for social media profile analysis
 
 import json
 import os
+from contextlib import contextmanager
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -14,6 +15,25 @@ from .authenticity import ProfileAuthenticityAnalyzer
 from .prediction import PredictionEngine
 from .openrouter_client import openrouter_client, OpenRouterError
 from ..utils.logger import setup_logger
+
+
+# Shared app for cache access outside a request/worker context, created at most
+# once per process. None means it could not be created (no database configured),
+# in which case caching is skipped and runs behave as before.
+_CACHE_APP = None
+_CACHE_APP_FAILED = False
+
+
+def _shared_cache_app():
+    global _CACHE_APP, _CACHE_APP_FAILED
+    if _CACHE_APP is not None or _CACHE_APP_FAILED:
+        return _CACHE_APP
+    try:
+        from app.web.app import create_app
+        _CACHE_APP = create_app()
+    except Exception:
+        _CACHE_APP_FAILED = True
+    return _CACHE_APP
 
 
 class SocialMediaAnalyzer:
@@ -64,52 +84,77 @@ class SocialMediaAnalyzer:
 
     # ------------------------------------------------------------------
     # Dossier cache: re-analysis must not re-scrape data that has not changed.
-    # Only meaningful inside a Flask app context with a known owner; CLI and
-    # desktop runs have no user to scope the cache to, so they always collect.
+    # A web or Celery run is scoped to its signed-in user. A CLI or desktop run
+    # has no signed-in user but is still one operator on one machine, so it
+    # uses an operator-local scope instead of opting out of the cache - which is
+    # why a desktop re-run of the same handle used to spend the credits the
+    # cache exists to save.
     # ------------------------------------------------------------------
     @staticmethod
+    @contextmanager
     def _cache_scope():
-        """Return (session, user_id, ttl_hours) when caching is available."""
+        """Yield (session, owner_id, ttl_hours), or None when unavailable.
+
+        Outside a Flask app context (CLI, desktop, scripts) a shared app is
+        created once so the local database - the same `data/vanta.db` the local
+        web UI uses - can serve the cache.
+        """
         try:
-            from flask import has_app_context
-            if not has_app_context():
-                return None
+            ttl = int(os.getenv("DOSSIER_CACHE_TTL_HOURS", "12") or "12")
+        except ValueError:
+            ttl = 12
+
+        try:
+            from app.web.models.dossier import LOCAL_CACHE_OWNER
             from app.utils.config import get_user_context
-            ctx = get_user_context() or {}
-            user_id = ctx.get("user_id")
-            if not user_id:
-                return None
-            from app.web.models import db
-            try:
-                ttl = int(os.getenv("DOSSIER_CACHE_TTL_HOURS", "12") or "12")
-            except ValueError:
-                ttl = 12
-            return db.session, user_id, ttl
+            from flask import has_app_context
         except Exception:
-            return None
+            yield None
+            return
+
+        owner = LOCAL_CACHE_OWNER
+        user_id = (get_user_context() or {}).get("user_id")
+        if user_id:
+            owner = int(user_id)
+
+        if has_app_context():
+            try:
+                from app.web.models import db
+                yield db.session, owner, ttl
+            except Exception:
+                yield None
+            return
+
+        app = _shared_cache_app()
+        if app is None:
+            yield None
+            return
+        with app.app_context():
+            from app.web.models import db
+            yield db.session, owner, ttl
 
     def _cache_lookup(self, platform: str, profile_id: str) -> Optional[Dict[str, Any]]:
-        scope = self._cache_scope()
-        if scope is None:
-            return None
-        session, user_id, _ttl = scope
         try:
-            from app.web.models.dossier import get_cached_dossier
-            return get_cached_dossier(session, user_id, platform, profile_id)
+            with self._cache_scope() as scope:
+                if scope is None:
+                    return None
+                session, owner, _ttl = scope
+                from app.web.models.dossier import get_cached_dossier
+                return get_cached_dossier(session, owner, platform, profile_id)
         except Exception as exc:
             self.logger.warning(f"Dossier cache lookup failed (collecting instead): {exc}")
             return None
 
     def _cache_store(self, platform: str, profile_id: str, dossier: Dict[str, Any]) -> None:
-        scope = self._cache_scope()
-        if scope is None:
-            return
-        session, user_id, ttl = scope
         try:
-            from app.web.models.dossier import store_cached_dossier
-            payload = {k: v for k, v in dossier.items() if k != "source"}
-            store_cached_dossier(session, user_id, platform, profile_id, payload,
-                                 ttl_hours=ttl)
+            with self._cache_scope() as scope:
+                if scope is None:
+                    return
+                session, owner, ttl = scope
+                from app.web.models.dossier import store_cached_dossier
+                payload = {k: v for k, v in dossier.items() if k != "source"}
+                store_cached_dossier(session, owner, platform, profile_id, payload,
+                                     ttl_hours=ttl)
         except Exception as exc:
             # A cache write must never fail a run that already collected data.
             self.logger.warning(f"Dossier cache write failed: {exc}")
