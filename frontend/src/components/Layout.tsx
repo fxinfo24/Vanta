@@ -81,37 +81,43 @@ const Layout: React.FC = () => {
             </span>
           </div>
 
-          {/* Navigation Links */}
-          <div className="hidden md:flex items-center space-x-1 bg-black/20 rounded-xl p-1 border border-white/5">
+          {/* Navigation Links. These were `hidden md:flex`, so a phone-sized
+              viewport had no way to reach anything but the current page. */}
+          <div className="flex items-center space-x-1 bg-black/20 rounded-xl p-1 border border-white/5">
             <button
               onClick={() => navigate('/dashboard')}
-              className={`flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${isActive('/dashboard') || isActive('/')
+              aria-label="Dashboard"
+              className={`flex items-center px-2.5 md:px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${isActive('/dashboard') || isActive('/')
                 ? 'bg-primary-500/20 text-white shadow-[0_0_20px_rgba(99,102,241,0.3)] border border-primary-500/30'
                 : 'text-white/60 hover:text-white hover:bg-white/5'
                 }`}
             >
-              <ChartBarIcon className="h-4 w-4 mr-2" />
-              Dashboard
+              <ChartBarIcon className="h-4 w-4 md:mr-2" />
+              <span className="hidden md:inline">Dashboard</span>
             </button>
             <button
               onClick={() => navigate('/tasks')}
-              className={`flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${isActive('/tasks')
+              aria-label="Tasks"
+              className={`flex items-center px-2.5 md:px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${isActive('/tasks')
                 ? 'bg-primary-500/20 text-white shadow-[0_0_20px_rgba(99,102,241,0.3)] border border-primary-500/30'
                 : 'text-white/60 hover:text-white hover:bg-white/5'
                 }`}
             >
-              <ListBulletIcon className="h-4 w-4 mr-2" />
-              Tasks
+              <ListBulletIcon className="h-4 w-4 md:mr-2" />
+              <span className="hidden md:inline">Tasks</span>
             </button>
           </div>
 
           {/* Right Actions */}
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 sm:space-x-4">
             <div className="h-8 w-[1px] bg-white/10 hidden sm:block"></div>
             <div className="flex items-center space-x-3">
-              <div className="px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20 flex items-center space-x-2">
+              <div
+                className="px-2 sm:px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20 flex items-center space-x-2"
+                title="System Online"
+              >
                 <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse shadow-[0_0_10px_#4ade80]" />
-                <span className="text-xs font-medium text-primary-200">System Online</span>
+                <span className="hidden sm:inline text-xs font-medium text-primary-200 whitespace-nowrap">System Online</span>
               </div>
               {budget && budget.known && (
                 <div

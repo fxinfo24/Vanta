@@ -14,6 +14,85 @@ import {
 } from 'recharts';
 import NetworkGraph from './NetworkGraph';
 
+// The executive summary arrives as Markdown ("**Subject Overview:**", "- item")
+// and was printed literally, so readers saw asterisks where headings belong.
+// Only the shapes the model actually emits are handled - bold, bullets,
+// headings, paragraphs - and anything else stays visible as plain text rather
+// than being silently dropped.
+const _inline = (text: string, keyBase: string): React.ReactNode[] =>
+  text
+    .split(/(\*\*[^*]+\*\*)/g)
+    .filter((part) => part !== '')
+    .map((part, i) =>
+      part.startsWith('**') && part.endsWith('**') && part.length > 4 ? (
+        <strong key={`${keyBase}-${i}`} className="font-semibold text-white/85">
+          {part.slice(2, -2)}
+        </strong>
+      ) : (
+        <React.Fragment key={`${keyBase}-${i}`}>{part}</React.Fragment>
+      ),
+    );
+
+const SummaryText: React.FC<{ text: string }> = ({ text }) => {
+  const blocks: React.ReactNode[] = [];
+  let paragraph: string[] = [];
+  let bullets: string[] = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const key = `p-${blocks.length}`;
+    blocks.push(
+      <p key={key} className="mb-3 last:mb-0 leading-relaxed">
+        {_inline(paragraph.join(' '), key)}
+      </p>,
+    );
+    paragraph = [];
+  };
+  const flushBullets = () => {
+    if (!bullets.length) return;
+    const key = `ul-${blocks.length}`;
+    blocks.push(
+      <ul key={key} className="mb-3 last:mb-0 list-disc pl-5 space-y-1">
+        {bullets.map((item, i) => (
+          <li key={`${key}-${i}`}>{_inline(item, `${key}-${i}`)}</li>
+        ))}
+      </ul>,
+    );
+    bullets = [];
+  };
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) {
+      flushParagraph();
+      flushBullets();
+      continue;
+    }
+    if (/^[*-]\s+/.test(line)) {
+      flushParagraph();
+      bullets.push(line.replace(/^[*-]\s+/, ''));
+      continue;
+    }
+    if (/^#{1,6}\s+/.test(line)) {
+      flushParagraph();
+      flushBullets();
+      const key = `h-${blocks.length}`;
+      blocks.push(
+        <h4 key={key} className="text-white/85 font-semibold mt-2 mb-1">
+          {_inline(line.replace(/^#{1,6}\s+/, ''), key)}
+        </h4>,
+      );
+      continue;
+    }
+    flushBullets();
+    paragraph.push(line);
+  }
+  flushParagraph();
+  flushBullets();
+
+  return <>{blocks}</>;
+};
+
 interface AnalysisResult {
   profile_info: any;
   sentiment: any;
@@ -137,9 +216,9 @@ const ResultView: React.FC = () => {
                   : `@${results.profile_info.username}`}
               </div>
             )}
-            <p className="text-base md:text-lg text-white/60 max-w-2xl">
-              {results.executive_summary || results.profile_info?.bio || "No summary available."}
-            </p>
+            <div className="text-base md:text-lg text-white/60 max-w-2xl">
+              <SummaryText text={results.executive_summary || results.profile_info?.bio || "No summary available."} />
+            </div>
           </div>
           <div className="flex gap-3 w-full md:w-auto">
             <button onClick={() => handleExport('html')} className="glass-button bg-primary-600 hover:bg-primary-500 text-white flex items-center justify-center flex-1 md:flex-initial shadow-[0_0_15px_rgba(79,70,229,0.4)] transition-all">

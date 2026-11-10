@@ -1,6 +1,7 @@
 // Dashboard Component for Vanta
 // Shows recent tasks and platform breakdown
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ChartBarIcon,
   CheckCircleIcon,
@@ -40,6 +41,9 @@ const verdictColor = (s?: string) => {
 };
 
 const Dashboard: React.FC = () => {
+  // Rows were styled as clickable (cursor-pointer, hover highlight) but had no
+  // handler, so the only way to a report was the Tasks tab.
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [showNewAnalysis, setShowNewAnalysis] = useState(false);
 
@@ -199,14 +203,31 @@ const Dashboard: React.FC = () => {
               <span className="w-1.5 h-6 bg-secondary-500 rounded-full mr-3"></span>
               Recent Tasks
             </h3>
-            <button className="text-xs text-primary-400 hover:text-primary-300 transition-colors">View All</button>
+            <button
+              onClick={() => navigate('/tasks')}
+              className="text-xs text-primary-400 hover:text-primary-300 transition-colors"
+            >
+              View All
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar p-2">
             {tasks.length ? (
               <div className="space-y-2">
                 {tasks.map((t) => (
-                  <div key={t.id} className="p-4 rounded-lg bg-white/5 hover:bg-white/10 transition-colors border border-transparent hover:border-white/5 group cursor-pointer">
+                  <div
+                    key={t.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => navigate(`/tasks/${t.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        navigate(`/tasks/${t.id}`);
+                      }
+                    }}
+                    className="p-4 rounded-lg bg-white/5 hover:bg-white/10 transition-colors border border-transparent hover:border-white/5 group cursor-pointer focus:outline-none focus:border-primary-500/40"
+                  >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-3">
                         <div className={`w-2 h-2 rounded-full ${t.status === 'completed' ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : t.status === 'failed' ? 'bg-rose-400' : 'bg-amber-400 animate-pulse'}`} />
