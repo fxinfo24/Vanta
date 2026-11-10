@@ -222,11 +222,30 @@ and 390 px mobile. Repo scan: **no provider secret in any tracked file or commit
 | `/api/tasks/<id>/results` | 1370 | 2415 |
 | `/api/provider/usage` | 1049 | 1758 |
 
-The health endpoint answers in ~526 ms **without touching the database**, and one
-simple query adds ~220 ms. Neither number is application code at this point: the
-service runs on the **free plan (0.1 CPU)** in **oregon**, while Neon lives in
-**us-east-2 (Ohio)** — every DB round trip crosses the country, and the pooled
-endpoint adds a hop. Cold start after 15 idle minutes is 15–74 s.
+The health endpoint answered in ~526 ms **without touching the database**, and
+one simple query added ~220 ms: the service runs on the **free plan (0.1 CPU)** in
+**oregon**, while Neon lived in **us-east-2 (Ohio)**, so every DB round trip
+crossed the country.
+
+**After moving the database to us-west-2 (same region as the API), same script,
+same warm-up, 20 samples each:**
+
+| Endpoint | p50 before → after | p95 before → after |
+|---|---|---|
+| `/api/health` (DB ping) | 526 → **307 ms** | 1740 → **819 ms** |
+| `/api/auth/me` (1 query) | 745 → **316 ms** | 1030 → **614 ms** |
+| `/api/tasks?limit=10` | 1127 → **409 ms** | 2156 → **917 ms** |
+| `/api/tasks/<id>/results` | 1370 → **410 ms** | 2415 → **717 ms** |
+| `/api/tasks/<id>/status` | 953 → **318 ms** | 1657 → **1058 ms** |
+| `/api/provider/usage` | 1049 → **346 ms** | 1758 → **921 ms** |
+
+p50 drops by 54–70% on every endpoint; the residual spread in p95 is free-plan
+CPU contention, not the network. The cutover was `pg_dump` → `pg_restore` into a
+new `aws-us-west-2` project, identical counts on all 14 tables / 8 sequences /
+7 enums / 31 indexes, `DATABASE_URI` repointed on Render, and the running app
+confirmed against the new project through `pg_stat_activity` (a live `pgbouncer`
+connection there, none on the old one) rather than by trusting the config.
+Cold start after 15 idle minutes is still 15–74 s.
 
 **Frontend** (headless Chromium, cache disabled, br/gzip transfer):
 
@@ -250,10 +269,11 @@ arrives after `/tasks` or `/tasks/<id>/results` returns. CLS on the dashboard
 
 ### Remaining risks (not fixed, with the lever)
 
-1. **Region split (biggest latency lever).** Render oregon ↔ Neon us-east-2.
-   Either move Neon to a us-west-2 branch/endpoint and repoint `DATABASE_URI`, or
-   recreate the Render service in `us-east` — Render cannot change region in
-   place. Expected gain: ~60–120 ms per DB round trip on nearly every endpoint.
+1. ~~**Region split.**~~ **Fixed Nov 2026:** the database now lives in Neon
+   `autumn-boat-11097579` (`aws-us-west-2`) next to the Render service. See the
+   measurement table above — DB-bound endpoints fell from 745–1370 ms to
+   316–410 ms at p50. The old `silent-dew-45227430` (us-east-2) project is kept
+   read-only as a rollback for a few days and should then be deleted.
 2. **Free plan.** 0.1 CPU, 512 MB, sleeps after 15 min. Render Starter removes
    sleep and multiplies CPU; it is a billing decision, not a code one.
 3. **No error monitoring.** Nothing reports a production exception. Add Sentry
@@ -285,9 +305,13 @@ in the same commit or every API call is blocked by the browser.
 - [x] Pooling: `pool_pre_ping`, `pool_recycle=280`, 1 worker × 4 threads fits Neon's connection budget
 - [x] TLS/HSTS on both origins; CORS pre-flight verified from the Vercel origin
 - [x] Secret scanning + push protection + Dependabot security updates enabled
-- [ ] Branch protection on `main` (needs a CI check to be worth enabling)
-- [ ] Error monitoring + uptime alerting (needs a `SENTRY_DSN` and a monitor)
-- [ ] Neon backups/PITR retention confirmed; restore rehearsed once
+- [x] Branch protection on `main`: required checks `backend (pytest)` and
+      `frontend (types, lint, build)`, no force-push, no deletion
+- [ ] Error monitoring: code is wired and inert; needs `SENTRY_DSN` on Render,
+      then an uptime monitor on `/api/health`
+- [ ] Neon backups/PITR retention confirmed; restore rehearsed once (the
+      region move in Nov 2026 exercised dump → restore → row-count comparison,
+      which is a restore rehearsal of sorts, but not a PITR one)
 - [ ] Rollback rehearsed: Vercel *Instant Rollback* on the previous deployment +
       Render redeploy of the previous commit; DB migrations are forward-only today
 - [ ] Pinned Python lockfile
