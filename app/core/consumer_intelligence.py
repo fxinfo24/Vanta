@@ -25,7 +25,24 @@ class ConsumerIntelligenceAnalyzer:
         
         # Extract commerce-specific signals
         commerce_signals = self._extract_commerce_signals(all_data)
-        
+
+        # No signals means the model can only invent a persona, so the call is
+        # skipped and the empty result says why. This is the same rule the
+        # authenticity verdict follows when a run collected nothing.
+        if not any(commerce_signals.values()):
+            logger.info("No commerce signals in the dossier; consumer analysis skipped")
+            return {
+                "current_usage": {"products": [], "brands": []},
+                "shopping_psychology": {},
+                "brand_relationships": {"brand_loyalty": {}, "category_preferences": []},
+                "purchase_intent": {"active_consideration": [], "wishlist": []},
+                "forecast_90_day": {"predicted_purchases": [], "confidence": [], "reasoning": []},
+                "marketing_profile": {"price_sensitivity": "", "influence_susceptibility": None},
+                "evidence": [],
+                "limitations": ("No purchase, brand or product signals were found in the collected "
+                                "posts, so no consumer profile was generated."),
+            }
+
         system_prompt = """You are a Consumer Psychologist and Marketing Intelligence Expert.
         Analyze digital footprints to construct high-fidelity consumer profiles and purchase forecasts."""
         

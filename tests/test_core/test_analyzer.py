@@ -383,6 +383,24 @@ def test_special_category_sections_are_off_by_default(monkeypatch):
         assert leak not in str(out)
 
 
+def test_consumer_analysis_is_skipped_without_commerce_signals():
+    """A model asked to profile purchases from zero signals can only invent."""
+    from app.core.consumer_intelligence import ConsumerIntelligenceAnalyzer
+
+    class Exploding:
+        def analyze(self, *args, **kwargs):
+            raise AssertionError("consumer analysis must not run without signals")
+
+    out = ConsumerIntelligenceAnalyzer(Exploding()).generate_consumer_profile({
+        "username": "x", "profile": {"username": "x"},
+        "content": [{"text": "the weather is nice today"}],
+    })
+
+    assert out["forecast_90_day"]["predicted_purchases"] == []
+    assert out["current_usage"]["brands"] == []
+    assert "No purchase, brand or product signals" in out["limitations"]
+
+
 def test_gated_notice_is_safe_to_publish():
     """The gated payload is shown to users, exported and rendered in the PDF.
 

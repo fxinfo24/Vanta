@@ -739,9 +739,9 @@ def get_task(task_id):
 def delete_task(task_id):
     """Erase a run and everything derived from it, including snapshots.
 
-    Erasure has to be real to mean anything: the collected posts, the dossier and
-    the subject's history entries all go, because a retained snapshot still
-    contains the subject's engagement data. Only finished work can be deleted;
+    Erasure has to be real to mean anything: the collected posts, the cached raw
+    dossier and the subject's history entries all go, because a retained snapshot
+    still contains the subject's engagement data. Only finished work can be deleted;
     a run in flight must be cancelled first so the worker cannot rewrite it.
     """
     task = _own_task(task_id)
@@ -751,11 +751,32 @@ def delete_task(task_id):
         return jsonify({"error": "Cancel the run before deleting it"}), 409
 
     from app.web.models import DossierSnapshot
+    from app.web.models.dossier import DossierCache
 
     snapshots = DossierSnapshot.query.filter_by(task_id=task.id).delete()
+    # The dossier cache holds the raw posts for up to 12h; leaving it behind
+    # would mean "deleted" still had the subject's content on disk.
+    cached = DossierCache.query.filter_by(
+        user_id=task.user_id, platform=task.platform, profile_id=task.profile_id
+    ).delete(synchronize_session=False)
+    result_path = task.result_path
     db.session.delete(task)
     db.session.commit()
-    return jsonify({"message": "Task deleted", "task_id": task_id, "snapshots_deleted": snapshots})
+
+    file_removed = False
+    if result_path:
+        try:
+            path = Path(result_path).resolve()
+            results_root = Path(current_app.config.get("RESULTS_FOLDER") or ".").resolve()
+            if results_root in path.parents and path.is_file():
+                path.unlink()
+                file_removed = True
+        except OSError as e:  # a missing file must not fail the erasure
+            logger.warning(f"Could not remove result file for task {task_id}: {e}")
+
+    return jsonify({"message": "Task deleted", "task_id": task_id,
+                    "snapshots_deleted": snapshots, "dossiers_deleted": cached,
+                    "file_removed": file_removed})
 
 
 @api_bp.route("/tasks", methods=["GET"])

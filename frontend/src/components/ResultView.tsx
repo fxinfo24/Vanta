@@ -661,6 +661,11 @@ const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefDa
           attributes about someone who did not agree to being analysed, so they are left empty
           rather than estimated.
         </p>
+        <p className="text-xs text-white/40 mt-3">
+          This is a product decision, not missing data: no inference is run, so there is nothing this
+          tab could show. The psychology, consumer and behaviour sections are measured from the
+          collected posts, with receipts.
+        </p>
       </div>
     );
   }
@@ -777,7 +782,34 @@ const Receipts = ({ evidence, rejected, label = 'Receipts' }:
   );
 };
 
-const ConsumerTab = ({ results }: { results: AnalysisResult }) => (
+const ConsumerTab = ({ results }: { results: AnalysisResult }) => {
+  const consumer = results.consumer_profile || {};
+  const brands = Object.keys(consumer.brand_relationships?.brand_loyalty || {});
+  const products = consumer.current_usage?.products || [];
+  const predicted = consumer.forecast_90_day?.predicted_purchases || [];
+  const receipts = consumer.evidence || [];
+  const persona = consumer.shopping_psychology?.buyer_persona;
+  const limitation = Array.isArray(consumer.limitations) ? consumer.limitations[0] : consumer.limitations;
+
+  // Stored runs can carry an empty skeleton (every list empty, a limitation
+  // saying the signals were empty). Rendering that as "Unknown" next to an empty
+  // forecast reads as a measured finding, so state the truth instead.
+  if (!brands.length && !products.length && !predicted.length && !receipts.length && !persona) {
+    return (
+      <div className="glass-card p-6 rounded-2xl">
+        <h3 className="text-xl font-bold text-white mb-2">Consumer profile — no commerce signals</h3>
+        <p className="text-sm text-white/60 leading-relaxed">
+          {limitation || 'The collected posts contain no purchase, brand or product signals.'}
+        </p>
+        <p className="text-xs text-white/40 mt-3">
+          This section needs posts that mention buying, reviewing, unboxing or a brand. A profile that
+          never talks about products gets an empty section, not an invented shopping persona.
+        </p>
+      </div>
+    );
+  }
+
+  return (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div className="glass-card p-6 rounded-2xl bg-gradient-to-br from-emerald-500/5 to-transparent">
       <h3 className="text-xl font-bold text-white mb-2">Shopping Persona</h3>
@@ -820,7 +852,8 @@ const ConsumerTab = ({ results }: { results: AnalysisResult }) => (
       label="Consumer receipts"
     />
   </div>
-);
+  );
+};
 
 const PsychTab = ({ results, psychData }: { results: AnalysisResult, psychData: any[] }) => {
   const ws = results.content_analysis?.writing_style || {};

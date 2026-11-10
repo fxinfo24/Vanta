@@ -10,6 +10,7 @@ import {
   ClockIcon,
   CheckCircleIcon,
   XCircleIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline';
 
 interface Task {
@@ -31,6 +32,7 @@ const TasksList: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState({ platform: '', status: '' });
   const [showNewAnalysis, setShowNewAnalysis] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const hasActiveTasks = tasks.some(t => ['pending', 'processing'].includes(t.status));
 
@@ -67,6 +69,29 @@ const TasksList: React.FC = () => {
     const intervalId = setInterval(() => loadTasks(false), 4000);
     return () => clearInterval(intervalId);
   }, [hasActiveTasks, filter.status, loadTasks]);
+
+  // Runs were only ever removable through the API. A stale report could sit in
+  // the list forever with no way to erase it, even though the backend does a
+  // real delete (posts, cached dossier, snapshots).
+  const handleDelete = async (task: Task) => {
+    const confirmed = window.confirm(
+      `Delete run #${task.id} for ${task.profile_id}?\n\n` +
+      'This removes the report, its stored posts and its snapshot history. It cannot be undone.'
+    );
+    if (!confirmed) return;
+
+    setDeletingId(task.id);
+    try {
+      const response = await api.deleteTask(task.id);
+      if (!response.success) {
+        window.alert(response.error || 'Could not delete this run.');
+        return;
+      }
+      setTasks((previous) => previous.filter((item) => item.id !== task.id));
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -295,6 +320,22 @@ const TasksList: React.FC = () => {
                         </div>
                       )}
                     </div>
+
+                    {!['pending', 'processing'].includes(task.status) && (
+                      <button
+                        onClick={() => handleDelete(task)}
+                        disabled={deletingId === task.id}
+                        title="Delete this run and the data behind it"
+                        aria-label={`Delete run ${task.id}`}
+                        className="p-2 rounded-lg hover:bg-red-500/10 text-white/40 hover:text-red-400 transition-colors disabled:opacity-40"
+                      >
+                        {deletingId === task.id ? (
+                          <span className="w-5 h-5 block animate-spin rounded-full border-2 border-white/20 border-t-red-400" />
+                        ) : (
+                          <TrashIcon className="w-5 h-5" />
+                        )}
+                      </button>
+                    )}
 
                     <Link
                       to={`/tasks/${task.id}`}

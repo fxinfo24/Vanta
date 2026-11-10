@@ -181,6 +181,16 @@ class ApiService {
     }
   }
 
+  /** Erase a finished run: report, stored posts and its snapshot history. */
+  async deleteTask(taskId: number): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.api.delete(`/tasks/${taskId}`);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   async getPlatformDistribution(): Promise<ApiResponse<any>> {
     try {
       const response = await this.api.get('/stats/platform-distribution');

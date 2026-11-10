@@ -853,6 +853,34 @@ def test_delete_task_removes_task_and_snapshots(client, app):
         assert DossierSnapshot.query.filter_by(task_id=task_id).count() == 0
 
 
+def test_delete_task_also_drops_the_cached_dossier(client, app):
+    """A cached dossier holds the raw posts; keeping it undoes the erasure."""
+    from app.web.models import db
+    from app.web.models.dossier import DossierCache
+
+    with app.app_context():
+        task = Task(platform="facebook", profile_id="cached_subject",
+                    user_id=app.config["TEST_USER_ID"])
+        task.status = TaskStatus.COMPLETED
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+        db.session.add(DossierCache(
+            user_id=app.config["TEST_USER_ID"], platform="facebook",
+            profile_id="cached_subject", payload={"content": [{"text": "raw post"}]},
+            collected_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(hours=6),
+        ))
+        db.session.commit()
+
+    response = client.delete(f"/api/tasks/{task_id}")
+
+    assert response.status_code == 200
+    assert response.get_json()["dossiers_deleted"] == 1
+    with app.app_context():
+        assert DossierCache.query.filter_by(profile_id="cached_subject").count() == 0
+
+
 def test_delete_task_refuses_a_run_in_flight(client, app):
     """Deleting a processing run would let the worker resurrect it."""
     with app.app_context():
