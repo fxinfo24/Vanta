@@ -271,7 +271,8 @@ def _apply_flag_grounding(result: Dict[str, Any], avail: Dict[str, Any],
 # evidence of inauthenticity. Reporting them as red flags inflates the risk
 # picture (three of six "flags" on a real run were just missing metrics).
 _DATA_GAP_RE = re.compile(
-    r"\bunknown\b|\bnot\s+(?:available|exposed|collected|provided|reported)\b"
+    r"\bunknown\b|\bnot\s+(?:available|exposed|collected|provided|reported|disclosed)\b"
+    r"|\bunavailable\b"
     r"|\bcannot\s+(?:verify|assess|calculate|determine|confirm)\b"
     r"|\blimited\s+sample\b|\binsufficient\s+(?:data|sample)\b|\bsample\s+size\b"
     # An absent verified badge is the provider's limit, not a finding about the
