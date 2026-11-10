@@ -4,14 +4,17 @@ JWT-based authentication with role-based access control
 """
 
 import os
+import time
 import jwt
 import bcrypt
 import logging
+import threading
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session, sessionmaker
 from dotenv import load_dotenv
+from flask import request, current_app
 
 from .models.user import User, UserRole
 
@@ -348,6 +351,63 @@ def recent_reset_requests(db: Session, user_id: int) -> int:
         PasswordResetToken.user_id == user_id,
         PasswordResetToken.created_at >= since,
     ).count()
+
+
+# ---------------------------------------------------------------------------
+# Request throttling
+# ---------------------------------------------------------------------------
+# Fixed-window counters held in this process. The API runs as a single gunicorn
+# worker on Render, so one process sees every request; a second instance would
+# need a shared store (Redis) for the limits to stay correct. These guard the
+# endpoints that invite brute force (login) or cost money per call (reset mail,
+# analysis runs).
+
+_THROTTLE: Dict[str, tuple] = {}
+_THROTTLE_LOCK = threading.Lock()
+
+
+def throttle(bucket: str, limit: int, window_seconds: int) -> int:
+    """Record one attempt for ``bucket``.
+
+    Returns 0 while the caller is under the limit, otherwise the seconds until
+    the window resets (suitable for a Retry-After header). Disabled under
+    TESTING so a test suite that signs in repeatedly is not throttled.
+    """
+    try:
+        if current_app.config.get("TESTING"):
+            return 0
+    except RuntimeError:  # no app context (scripts, CLI)
+        pass
+
+    now = time.monotonic()
+    with _THROTTLE_LOCK:
+        start, count = _THROTTLE.get(bucket, (now, 0))
+        if now - start >= window_seconds:
+            start, count = now, 0
+        count += 1
+        _THROTTLE[bucket] = (start, count)
+        if len(_THROTTLE) > 4096:  # drop expired buckets so the map stays bounded
+            for key, (seen, _) in list(_THROTTLE.items()):
+                if now - seen >= window_seconds:
+                    _THROTTLE.pop(key, None)
+
+    if count > limit:
+        return max(1, int(round(window_seconds - (now - start))))
+    return 0
+
+
+def client_key() -> str:
+    """Best-effort caller identity for throttling.
+
+    Render terminates TLS and appends the caller to X-Forwarded-For, so the
+    left-most entry is the real client. request.remote_addr is the proxy, which
+    would put every user in one bucket - one attacker could then lock out
+    everyone.
+    """
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
 
 
 def consume_reset_token(db: Session, raw: str) -> Optional[User]:

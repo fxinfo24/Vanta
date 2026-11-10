@@ -19,7 +19,7 @@ from ..models.user import User, UserSettings
 from ..auth import (auth_session, authenticate_user, create_access_token,
                     create_user, get_or_create_settings, load_user_context,
                     user_to_dict, verify_password, hash_password,
-                    AuthenticationError)
+                    AuthenticationError, throttle, client_key)
 
 logger = logging.getLogger("api")
 
@@ -100,6 +100,10 @@ def _own_post(post_id):
 
 @api_bp.route("/auth/register", methods=["POST"])
 def auth_register():
+    retry_after = throttle(f"register:{client_key()}", 5, 3600)
+    if retry_after:
+        return (jsonify({"error": "Too many sign-up attempts. Try again later."}),
+                429, {"Retry-After": str(retry_after)})
     data = request.get_json() or {}
     email = str(data.get("email", "")).strip().lower()
     password = str(data.get("password", ""))
@@ -126,6 +130,12 @@ def auth_register():
 
 @api_bp.route("/auth/login", methods=["POST"])
 def auth_login():
+    # Brute-force guard. A wrong password and a wrong address get the same
+    # generic 401 above; this only caps how many guesses one caller can make.
+    retry_after = throttle(f"login:{client_key()}", 10, 300)
+    if retry_after:
+        return (jsonify({"error": "Too many sign-in attempts. Try again shortly."}),
+                429, {"Retry-After": str(retry_after)})
     data = request.get_json() or {}
     email = str(data.get("email", "")).strip().lower()
     password = str(data.get("password", ""))
@@ -160,6 +170,10 @@ def auth_forgot_password():
         return jsonify({"error": "Valid email is required"}), 400
 
     generic = {"message": "If that address has an account, a reset link has been sent."}
+    # Per-caller cap, answered exactly like a real request: neither the status
+    # nor the body may hint that this address does or does not exist.
+    if throttle(f"forgot:{client_key()}", 10, 900):
+        return jsonify(generic), 202
     session = auth_session()
     try:
         user = session.query(User).filter(User.email == email).first()
@@ -632,6 +646,13 @@ def start_analysis():
     # Pre-flight: never start a run the provider balance cannot cover. The
     # failure mode this prevents is a half-collected dossier that looks like an
     # account with almost no content.
+    # Each run spends real provider credits (24 for a deep dossier); an
+    # accidental retry loop in a client should not be able to drain them.
+    retry_after = throttle(f"analyze:{_uid()}", 10, 600)
+    if retry_after:
+        return (jsonify({"error": "Too many analyses started. Wait a moment."}),
+                429, {"Retry-After": str(retry_after)})
+
     budget = _provider_budget(mode)
     if not budget["enough"]:
         return jsonify({
@@ -893,7 +914,11 @@ def _subject_snapshots(task, limit=12):
     )
     query = (query.filter(Task.user_id.is_(None)) if task.user_id is None
              else query.filter(Task.user_id == task.user_id))
-    rows = query.order_by(DossierSnapshot.created_at.asc()).all()
+    # Newest-first with a SQL-side window: a deep snapshot is a few hundred KB
+    # of JSON, so reading a subject's whole history to keep the last 12 shipped
+    # megabytes over the pool for a 12-point trend.
+    rows = query.order_by(DossierSnapshot.created_at.desc()).limit(limit).all()
+    rows.reverse()
     if not rows and task.profile_id:
         # Nothing matched on identity: fall back to the resolved username of
         # this task's own snapshot so a rename still yields its own timeline.
@@ -907,8 +932,9 @@ def _subject_snapshots(task, limit=12):
                      .filter(func.lower(DossierSnapshot.username) == (own.username or "").lower()))
             query = (query.filter(Task.user_id.is_(None)) if task.user_id is None
                      else query.filter(Task.user_id == task.user_id))
-            rows = query.order_by(DossierSnapshot.created_at.asc()).all()
-    return rows[-limit:]
+            rows = query.order_by(DossierSnapshot.created_at.desc()).limit(limit).all()
+            rows.reverse()
+    return rows
 
 
 def _subject_freshness(tasks):
@@ -1129,14 +1155,9 @@ def download_results(task_id):
             data = json.load(f)
 
     if not data:
-        print("DEBUG: Result data is empty/None")
+        logger.warning(f"Download requested for task {task_id} with no stored results")
         return jsonify({"error": "Results not found"}), 404
-    
-    print(f"DEBUG: Result data type: {type(data)}")
-    # print(f"DEBUG: Result data keys: {data.keys() if isinstance(data, dict) else 'Not Dict'}")
 
-    # HTML Dossier Export
-    # HTML Dossier Export
     if output_format in ['html', 'pdf']:
         try:
             from app.core.report_generator import DossierReportGenerator
@@ -1152,15 +1173,17 @@ def download_results(task_id):
                 }
             )
         except Exception as e:
-            print(f"DEBUG: HTML generation error: {e}")
-            return jsonify({"error": f"Report generation failed: {e}", "details": str(e)}), 500
+            # Internal exception text can carry file paths and library internals;
+            # log it and answer with a message that is safe to show a user.
+            logger.error(f"HTML generation failed for task {task_id}: {e}", exc_info=True)
+            return jsonify({"error": "Report generation failed"}), 500
 
     # Default JSON Export
     try:
         payload = json.dumps(data, indent=2, default=str)
     except Exception as e:
-        print(f"DEBUG: JSON serialization error: {e}")
-        return jsonify({"error": f"Serialization error: {e}"}), 500
+        logger.error(f"JSON serialization failed for task {task_id}: {e}", exc_info=True)
+        return jsonify({"error": "Serialization failed"}), 500
 
     return current_app.response_class(
         payload,

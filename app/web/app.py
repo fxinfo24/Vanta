@@ -90,10 +90,11 @@ def create_app(test_config=None):
         if app.config.get("DEBUG") or os.environ.get("FLASK_ENV") == "development":
             cors_origins = ["*"]
         else:
-            # In production, default to allowing Vercel frontends
+            # In production, default to allowing the Vercel frontend. The old
+            # defaults pointed at retired profile-scope hosts, so an unset
+            # CORS_ORIGINS would have blocked every request from the live site.
             cors_origins = [
-                "https://profile-scope.vercel.app",
-                "https://profile-scope-git-main-fxinfo24s-projects.vercel.app",
+                "https://vanta-intel.vercel.app",
                 "http://localhost:5173",  # Vite dev server
                 "http://127.0.0.1:5173",
             ]
@@ -104,6 +105,18 @@ def create_app(test_config=None):
          supports_credentials=True,
          allow_headers=["Content-Type", "Authorization"],
          methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+
+    # Baseline response headers for the API origin itself (Vercel covers the
+    # frontend). setdefault keeps anything a route already chose - including the
+    # CORS headers that flask-cors adds on the same response.
+    @app.after_request
+    def _security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+        return response
 
     with app.app_context():
         # Import and register blueprints
