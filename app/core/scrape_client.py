@@ -58,6 +58,45 @@ def _key_fingerprint() -> Optional[str]:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
+def fetch_credit_balance(timeout: int = 15) -> Any:
+    """Ask the provider for the real remaining balance.
+
+    The stored number is the last value a collection happened to report, so it
+    is stale by however many credits were spent since - the dashboard showed
+    1,126 while the account held 1,093. This endpoint (1 credit per call) is the
+    only source of truth; it is called on request, never on a page load.
+
+    Returns the balance as an int, or None when the key or the call is
+    unavailable - callers then keep showing the stored value with its timestamp.
+    """
+    from app.utils.config import resolve_api_key
+
+    key = resolve_api_key("SCRAPECREATORS_API_KEY")
+    if not key or key == "your_scrapecreators_api_key_here":
+        return None
+    base = os.getenv("SCRAPECREATORS_BASE_URL", "https://api.scrapecreators.com")
+    try:
+        response = requests.get(
+            f"{base}/v1/account/credit-balance",
+            headers={"x-api-key": key, "User-Agent": "Vanta/1.0"},
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            logger.warning("Credit balance check returned %s", response.status_code)
+            return None
+        payload = response.json() or {}
+        # The live endpoint answers `creditCount` (+ a human message); the
+        # documented `credits_remaining` is what collection responses carry.
+        # Accept both rather than trusting the docs example.
+        balance = payload.get("credits_remaining", payload.get("creditCount"))
+    except Exception as exc:  # a failed check must not break the dashboard
+        logger.warning("Credit balance check failed: %s", exc)
+        return None
+
+    record_credits(balance)
+    return balance if isinstance(balance, (int, float)) else None
+
+
 def record_credits(remaining: Any) -> None:
     """Persist the last observed provider balance (best effort).
 

@@ -383,6 +383,28 @@ def test_special_category_sections_are_off_by_default(monkeypatch):
         assert leak not in str(out)
 
 
+def test_credit_balance_reads_the_field_the_api_actually_sends(monkeypatch):
+    """The live balance endpoint answers `creditCount` (the docs show another name).
+
+    Reading the documented `credits_remaining` returned None against the real
+    API, so the dashboard kept showing a stale number.
+    """
+    import app.core.scrape_client as sc
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"success": True, "creditCount": 1093,
+                    "message": "You have 1093 credits remaining."}
+
+    monkeypatch.setattr(sc.requests, "get", lambda *a, **k: Response())
+    monkeypatch.setattr(sc, "record_credits", lambda remaining: None)
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", "test-key")
+
+    assert sc.fetch_credit_balance() == 1093
+
+
 def test_consumer_analysis_is_skipped_without_commerce_signals():
     """A model asked to profile purchases from zero signals can only invent."""
     from app.core.consumer_intelligence import ConsumerIntelligenceAnalyzer

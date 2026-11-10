@@ -326,10 +326,12 @@ class ApiService {
     } catch (e) { return this.handleError(e); }
   }
 
-  // Last observed data-provider balance and the credit cost of a run.
-  async getProviderUsage(): Promise<ApiResponse<any>> {
+  // Data-provider balance and the credit cost of a run. `refresh` asks the
+  // provider for the live figure (costs 1 credit) instead of the last value a
+  // collection reported.
+  async getProviderUsage(refresh = false): Promise<ApiResponse<any>> {
     try {
-      const r = await this.api.get('/provider/usage');
+      const r = await this.api.get(`/provider/usage${refresh ? '?refresh=1' : ''}`);
       return { success: true, data: r.data };
     } catch (e) { return this.handleError(e); }
   }

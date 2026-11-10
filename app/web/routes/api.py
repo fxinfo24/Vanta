@@ -618,11 +618,26 @@ def _provider_budget(mode: str) -> dict:
 
 @api_bp.route("/provider/usage", methods=["GET"])
 def provider_usage():
-    """Last observed provider balance and what the next runs would cost."""
-    from app.core.scrape_client import RUN_CREDIT_ESTIMATES
+    """Provider balance and what the next runs would cost.
+
+    ?refresh=1 asks the provider for the live balance (1 credit) instead of
+    echoing the last value a collection reported. Without it the response
+    carries observed_at so the UI can say how old the number is.
+    """
+    from app.core.scrape_client import RUN_CREDIT_ESTIMATES, fetch_credit_balance
+
+    refreshed = str(request.args.get("refresh", "")).lower() in ("1", "true", "yes")
+    live = fetch_credit_balance() if refreshed else None
+    budget = _provider_budget("deep")
+    if refreshed:
+        budget["source"] = "provider" if live is not None else "stored"
+        if live is None:
+            budget["refresh_error"] = "Live balance unavailable; showing the last observed value."
+    else:
+        budget["source"] = "stored"
 
     return jsonify({
-        "scrapecreators": _provider_budget("deep"),
+        "scrapecreators": budget,
         "estimated_cost_per_run": RUN_CREDIT_ESTIMATES,
     })
 

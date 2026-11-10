@@ -18,6 +18,7 @@ const Layout: React.FC = () => {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const [budget, setBudget] = useState<any>(null);
+  const [checkingBalance, setCheckingBalance] = useState(false);
 
   // Last balance the data provider reported. Shown because a run that cannot
   // be paid for is now refused, and the user deserves to see why beforehand.
@@ -36,6 +37,20 @@ const Layout: React.FC = () => {
     const timer = setInterval(load, 60000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [user, location.pathname]);
+
+  // The pill echoes the last balance a collection reported, which drifts as
+  // runs spend credits (it read 1,126 while the account held 1,093). Clicking
+  // it asks the provider - one credit - and the tooltip says so.
+  const refreshBalance = async () => {
+    if (checkingBalance) return;
+    setCheckingBalance(true);
+    try {
+      const res = await apiService.getProviderUsage(true);
+      if (res.success) setBudget(res.data?.scrapecreators || null);
+    } finally {
+      setCheckingBalance(false);
+    }
+  };
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -120,19 +135,23 @@ const Layout: React.FC = () => {
                 <span className="hidden sm:inline text-xs font-medium text-primary-200 whitespace-nowrap">System Online</span>
               </div>
               {budget && budget.known && (
-                <div
-                  title={`${budget.message}${budget.observed_at ? ` Last observed ${budget.observed_at}.` : ''}`}
-                  className={`hidden sm:flex px-3 py-1.5 rounded-full border items-center space-x-2 ${
+                <button
+                  onClick={refreshBalance}
+                  disabled={checkingBalance}
+                  title={`${budget.message}${budget.observed_at ? ` Last observed ${budget.observed_at}.` : ''} Click to ask the provider for the live balance (costs 1 credit).`}
+                  className={`hidden sm:flex px-3 py-1.5 rounded-full border items-center space-x-2 transition-colors disabled:cursor-wait ${
                     budget.enough
-                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200'
-                      : 'bg-rose-500/10 border-rose-500/25 text-rose-200'
+                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200 hover:bg-emerald-500/20'
+                      : 'bg-rose-500/10 border-rose-500/25 text-rose-200 hover:bg-rose-500/20'
                   }`}
                 >
-                  <span className="w-2 h-2 rounded-full bg-current opacity-70" />
+                  <span className={`w-2 h-2 rounded-full bg-current ${checkingBalance ? 'animate-pulse' : 'opacity-70'}`} />
                   <span className="text-xs font-medium">
-                    {budget.remaining} credits · ~{budget.runs_left} {budget.runs_left === 1 ? 'run' : 'runs'} left
+                    {checkingBalance
+                      ? 'checking balance…'
+                      : `${budget.remaining} credits${budget.runs_left != null ? ` · ~${budget.runs_left} ${budget.runs_left === 1 ? 'run' : 'runs'} left` : ''}`}
                   </span>
-                </div>
+                </button>
               )}
               {/* Profile menu */}
               <div className="relative" ref={menuRef}>
