@@ -127,15 +127,41 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   handle are dropped with the removal recorded (`filtered_indicators`). Flags about the provider
   omitting the verified badge move to `data_gaps` the same way (verified live: red_flags empty on
   "Arif Aziz", risk low, 0.15 bot likelihood).
+- **Cache reaches CLI and desktop (Nov 2026):** a run with no signed-in user used to skip the dossier cache
+  entirely, so re-analysing the same handle from the desktop paid the provider again. Those runs now
+  share an operator-local scope (`DossierCache` owner `0`, distinct from every web user) backed by the
+  same local database; a shared app is created once for the session. Unit tests install a barrier so an
+  analyzer test without an app context can never read or write the developer's real database.
+- **A finished analysis is committed before its snapshot (Nov 2026):** the snapshot step rolls back on
+  failure, and the result payload was still uncommitted at that point — a failed history write erased a
+  completed analysis (task 21: status completed, no result, no error). The result now commits first, so a
+  snapshot failure can only lose the snapshot. Verified after the fix: task 22 reused the cached dossier,
+  stored its result and snapshot, and spent **0** of 1173 credits.
+- **Absent badge is missing input (Nov 2026):** live runs kept listing "Not verified — no platform
+  authenticity badge" as a red flag while "Account age unknown" was correctly a data gap. The gap test
+  now recognises the phrasings models actually produce ("not verified", "no platform identity
+  confirmation"). Verified on a fresh run: that line lands in `data_gaps`, not `red_flags`.
+- **One snapshot is not "no change" (Nov 2026):** with a single snapshot the results payload returned no
+  `alerts` at all, which reads the same as a clean comparison. It now returns every rule as
+  `not_evaluated` with the reason ("only one snapshot stored for this subject").
+- **Freshness on the task list (Nov 2026):** `GET /api/tasks` carries `last_collected_at` (newest snapshot
+  of that subject) and `history_depth` (how many snapshots exist), shown on the dashboard and task list so
+  a report whose numbers are days old is not mistaken for a current one and one snapshot is not mistaken
+  for a trend. Two grouped queries per page, not one per row.
 - **A stored balance belongs to one key (Nov 2026):** the balance row now stores a truncated SHA-256
   of the provider key that produced it (migration `a7c9e14f2b83`, applied to Neon). After a key
   change the stored number describes an account no longer in use, so it is reported as inapplicable
   instead of rejecting every run with 402 — the deadlock that appeared when a stale zero from an
   exhausted key met a funded new key. A row with no fingerprint is treated the same way.
-- Analysis is **credit-blocked right now**: the ScrapeCreators account returns
-  `402 CREDITS_EXHAUSTED`, so a run collects nothing and every section reports `not_measured`
-  (task 18). The failure is now shown in the coverage strip instead of only in `raw_dossier.errors`,
-  and the Facebook path falls back to Apify (also billing-blocked, `$0.004` left).
+- Analysis is **funded again** (Nov 2026): the provider key was rotated and the recorded zero balance
+  belonged to the old key, so it was reported as inapplicable (not blocking) — the exact deadlock the
+  key fingerprint exists to prevent. Measured cost per deep run: **23–24 credits**. Runs verified with
+  real data: `AzizMdArif` (2,061 followers, 49 posts, 1 duplicate removed, alerts fired: engagement
+  −33.9%, 3 posts removed), `sahab0769` (আহমেদ সাহাব, 19,269 followers, 46 posts, 71 comments, 4
+  duplicates removed), `faham.abdus` (Faham Abdus Salam, 535,033 followers, 50 posts, 97 comments).
+  Balance 1173 → 1126 for the last two. **Render applies env-var changes only on a new deploy** — a
+  `restart` keeps the old environment, which is why the rotated key looked ignored until a deploy ran.
+  Earlier exhausted-key failures remain visible on task 18/19.
 - Migrations: fresh DBs use `db.create_all()`; existing DBs run
   `flask db stamp 6a95d7308ea3 && flask db upgrade` (adds `task.result_data`, verification superset cols).
 
