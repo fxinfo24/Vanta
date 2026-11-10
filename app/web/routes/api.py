@@ -3,9 +3,10 @@
 Vanta API Routes
 Handles API endpoints for tasks and analysis results
 """
-from flask import Blueprint, jsonify, request, current_app, send_file, g
+from flask import Blueprint, jsonify, request, current_app, send_file, g, abort
 from pathlib import Path
 from datetime import datetime
+import hmac
 import json
 import threading
 import re
@@ -1262,6 +1263,41 @@ def health_check():
         "database": db_status,
         "version": "1.0.0",
         "timestamp": datetime.utcnow().isoformat() + "Z"
+    })
+
+
+@api_bp.route("/health/self-test", methods=["GET"])
+def monitoring_self_test():
+    """Emit one deliberate exception so error reporting can be proven live.
+
+    Answers only when MONITORING_TEST_TOKEN is set and matches the
+    X-Monitoring-Token header; anyone else gets a 404, so the route does not
+    advertise itself. The event carries this request's id, which is what makes a
+    user's report traceable to a stack trace. The exception is caught here, so
+    the endpoint is safe to hit from a monitor.
+    """
+    expected = (os.environ.get("MONITORING_TEST_TOKEN") or "").strip()
+    supplied = request.headers.get("X-Monitoring-Token") or ""
+    if not expected or not hmac.compare_digest(supplied, expected):
+        abort(404)
+
+    sdk = current_app.extensions.get("sentry")
+    if sdk is None:
+        return jsonify({
+            "captured": False,
+            "reason": "error reporting is not configured in this deployment",
+            "request_id": getattr(g, "request_id", None),
+        }), 503
+
+    try:
+        raise RuntimeError("Vanta monitoring self-test: expected error, not a real failure")
+    except RuntimeError:
+        event_id = sdk.capture_exception()
+
+    return jsonify({
+        "captured": bool(event_id),
+        "event_id": event_id,
+        "request_id": getattr(g, "request_id", None),
     })
 
 

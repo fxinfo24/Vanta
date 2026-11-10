@@ -370,6 +370,43 @@ def test_api_get_results(client, app):
     assert data["score"] == 85
 
 
+def test_monitoring_self_test_is_hidden_and_reports_event_id(client, app):
+    """The probe exists to prove capture in production, so it must not advertise."""
+    monkeypatch = pytest.MonkeyPatch()
+
+    # No token configured: indistinguishable from any other missing route.
+    monkeypatch.delenv("MONITORING_TEST_TOKEN", raising=False)
+    assert client.get("/api/health/self-test").status_code == 404
+
+    # Token configured, wrong header: still hidden.
+    monkeypatch.setenv("MONITORING_TEST_TOKEN", "expected-token")
+    assert client.get("/api/health/self-test",
+                      headers={"X-Monitoring-Token": "wrong"}).status_code == 404
+
+    # Token matches but this deployment has no Sentry configured.
+    assert client.get("/api/health/self-test",
+                      headers={"X-Monitoring-Token": "expected-token"}).status_code == 503
+
+    class FakeSdk:
+        def set_tag(self, key, value):
+            self.tag = (key, value)
+
+        def capture_exception(self):
+            return "deadbeef"
+
+    app.extensions["sentry"] = FakeSdk()
+    try:
+        response = client.get("/api/health/self-test",
+                              headers={"X-Monitoring-Token": "expected-token"})
+        body = json.loads(response.data)
+        assert response.status_code == 200
+        assert body["captured"] is True and body["event_id"] == "deadbeef"
+        assert body["request_id"]
+    finally:
+        app.extensions.pop("sentry", None)
+        monkeypatch.undo()
+
+
 def test_api_get_results_scrubs_stored_policy_key(client, app):
     """Reports stored before the copy fix must not keep leaking the config key.
 
