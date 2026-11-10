@@ -408,7 +408,7 @@ const HistoryPanel = ({ results }: { results: AnalysisResult }) => {
 
       {history.snapshots?.length >= 2 && (
         <div className="h-48 mb-5">
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height={192}>
             <LineChart
               data={history.snapshots.map((s: any, i: number) => ({
                 // A date is what the reader needs (all backfilled runs share
@@ -696,7 +696,7 @@ const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefDa
     <div className="glass-card p-6 rounded-2xl">
       <h3 className="text-xl font-bold text-white mb-4">Core Values</h3>
       <div className="h-64">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height={256}>
           <BarChart data={beliefData} layout="vertical" margin={{ left: 40 }}>
             <XAxis type="number" domain={[0, 10]} hide />
             <YAxis dataKey="name" type="category" width={100} tick={{ fill: '#94a3b8', fontSize: 12 }} />
@@ -832,7 +832,7 @@ const PsychTab = ({ results, psychData }: { results: AnalysisResult, psychData: 
   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div className="glass-card p-6 rounded-2xl h-96">
       <h3 className="text-xl font-bold text-white mb-4">Personality (Big 5)</h3>
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer width="100%" height={280}>
         <RadarChart cx="50%" cy="50%" outerRadius="80%" data={psychData}>
           <PolarGrid stroke="#ffffff20" />
           <PolarAngleAxis dataKey="subject" tick={{ fill: '#94a3b8', fontSize: 12 }} />
