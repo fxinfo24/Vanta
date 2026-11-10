@@ -987,6 +987,17 @@ def _with_history(task, payload):
             logger.error(f"Alert evaluation failed for task {task.id}: {e}", exc_info=True)
             out["alerts"] = {"alerts": [], "not_evaluated": [
                 {"rule": "all", "reason": "alert evaluation failed; see server logs"}]}
+    else:
+        # One snapshot is not a quiet subject, it is an unanswerable comparison.
+        # Saying so keeps "no alerts" from being read as "nothing changed".
+        out["alerts"] = {
+            "alerts": [],
+            "not_evaluated": [{
+                "rule": "all",
+                "reason": "only one snapshot stored for this subject; run it again to compare",
+            }],
+            "elapsed_hours": None,
+        }
     return out
 
 

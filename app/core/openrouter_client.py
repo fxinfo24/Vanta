@@ -274,9 +274,13 @@ _DATA_GAP_RE = re.compile(
     r"\bunknown\b|\bnot\s+(?:available|exposed|collected|provided|reported)\b"
     r"|\bcannot\s+(?:verify|assess|calculate|determine|confirm)\b"
     r"|\blimited\s+sample\b|\binsufficient\s+(?:data|sample)\b|\bsample\s+size\b"
-    # A provider that omits the verified badge is the provider's limit, not a
-    # finding about the account.
-    r"|\bverification\s+gap\b|\bdata\s+collection\s+limitation\b|\bprovider\s+(?:gap|limitation)\b",
+    # An absent verified badge is the provider's limit, not a finding about the
+    # account: the model phrases it as "not verified", "no platform
+    # authenticity badge" or "no platform identity confirmation", all of which
+    # describe missing input rather than evidence of a fake profile.
+    r"|\bverification\s+gap\b|\bdata\s+collection\s+limitation\b|\bprovider\s+(?:gap|limitation)\b"
+    r"|\bnot\s+verified\b|\bno\s+platform\s+(?:authenticity|identity)\b"
+    r"|\bverification\s+(?:badge|status)\s+(?:absent|missing|not\s+returned)\b",
     re.IGNORECASE,
 )
 

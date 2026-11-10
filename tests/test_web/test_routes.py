@@ -988,10 +988,13 @@ def test_verification_gap_is_a_data_gap_not_a_red_flag():
 
     evidence, gaps = _split_indicators([
         "Verified flag is False - may indicate platform verification gap",
+        # Real phrasing from a live run: the model states it as a finding.
+        "Not verified — no platform authenticity badge",
+        "Not verified - no platform identity confirmation",
         "Account was created recently",
     ])
     assert evidence == ["Account was created recently"]
-    assert len(gaps) == 1
+    assert len(gaps) == 3
 
 
 def test_balance_recorded_with_another_key_does_not_block(app, monkeypatch):
