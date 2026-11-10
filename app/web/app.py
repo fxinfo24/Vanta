@@ -35,6 +35,79 @@ from app.utils.config import database_uri
 from dotenv import load_dotenv
 
 
+def _init_error_monitoring(app):
+    """Send uncaught exceptions and error-level logs to Sentry.
+
+    Inert unless SENTRY_DSN is set, so development and tests need no account and
+    nothing changes if the key is removed. Nothing that can identify a user or a
+    subject is shipped: no request body, headers, cookies, query string or user.
+    """
+    dsn = (os.environ.get("SENTRY_DSN") or "").strip()
+    if not dsn:
+        return None
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.flask import FlaskIntegration
+        from sentry_sdk.integrations.logging import LoggingIntegration
+    except ImportError:
+        app.logger.warning("SENTRY_DSN is set but sentry-sdk is not installed; error reporting is off")
+        return None
+
+    def _without_query(url):
+        return url.split("?", 1)[0] if isinstance(url, str) else url
+
+    def _strip_breadcrumb(crumb, hint=None):
+        data = crumb.get("data")
+        if isinstance(data, dict):
+            if "url" in data:
+                data["url"] = _without_query(data["url"])
+            for key in ("query", "body", "response_body"):
+                data.pop(key, None)
+        return crumb
+
+    def _strip_identifiers(event, hint):
+        request = event.get("request")
+        if isinstance(request, dict):
+            for key in ("data", "headers", "cookies", "query_string", "env"):
+                request.pop(key, None)
+            if "url" in request:
+                request["url"] = _without_query(request["url"])
+        # Query strings can carry an email or a token, and breadcrumbs record
+        # full URLs, so they are trimmed rather than trusted.
+        for crumb in (event.get("breadcrumbs") or {}).get("values") or []:
+            _strip_breadcrumb(crumb)
+        event.pop("user", None)
+        return event
+
+    try:
+        sample_rate = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE") or 0)
+    except ValueError:
+        sample_rate = 0.0
+
+    sentry_sdk.init(
+        dsn=dsn,
+        integrations=[
+            FlaskIntegration(),
+            # One log call with exc_info is already how this codebase reports a
+            # failed task; turning ERROR+ logs into events captures those too.
+            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+        ],
+        environment=os.environ.get("SENTRY_ENVIRONMENT") or os.environ.get("FLASK_ENV") or "production",
+        release=os.environ.get("RENDER_GIT_COMMIT") or None,
+        traces_sample_rate=sample_rate,
+        send_default_pii=False,
+        max_request_body_size="never",
+        # Frame locals carry the WSGI environ (QUERY_STRING, REQUEST_URI) and the
+        # request object itself - a token or an email in a URL would ship with it.
+        include_local_variables=False,
+        before_send=_strip_identifiers,
+        before_breadcrumb=_strip_breadcrumb,
+    )
+    app.extensions["sentry"] = sentry_sdk
+    app.logger.info("Error monitoring enabled")
+    return sentry_sdk
+
+
 def create_app(test_config=None):
     """Create and configure the Flask application"""
     # Load .env before reading any environment variable. Without this, a process
@@ -73,6 +146,8 @@ def create_app(test_config=None):
     # Override default configuration
     if test_config:
         app.config.update(test_config)
+
+    _init_error_monitoring(app)
 
     # Ensure instance folders exist
     os.makedirs(app.instance_path, exist_ok=True)
@@ -115,6 +190,10 @@ def create_app(test_config=None):
     def _start_request_timer():
         g.request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
         g.request_started = time.perf_counter()
+        # Lets an alert be matched to the log line and the X-Request-ID header.
+        sdk = app.extensions.get("sentry")
+        if sdk is not None:
+            sdk.set_tag("request_id", g.request_id)
 
     # Baseline response headers for the API origin itself (Vercel covers the
     # frontend). setdefault keeps anything a route already chose - including the
