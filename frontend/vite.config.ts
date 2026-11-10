@@ -24,10 +24,13 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
+        // Only React is pinned to a chunk. Naming recharts here looked like
+        // splitting, but a named manual chunk is preloaded from index.html for
+        // every route, so the charting library (156 kB compressed) downloaded
+        // on the sign-in screen too. Leaving it unnamed lets Rollup keep it in
+        // the lazy chunk of the two views that actually draw charts.
         manualChunks: {
-          vendor: ['react', 'react-dom'],
-          charts: ['recharts'],
-          icons: ['@heroicons/react']
+          vendor: ['react', 'react-dom']
         }
       }
     }
