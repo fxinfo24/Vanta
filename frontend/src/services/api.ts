@@ -40,10 +40,32 @@ class ApiService {
       return config;
     });
 
-    // Response interceptor for error handling
+    // Response interceptor: surface errors, but absorb the short window when
+    // the backend is being replaced (a deploy swap, or a sleeping free-tier
+    // instance waking up). During that window the edge answers without CORS
+    // headers, which the browser reports as a blocked request — observed live
+    // as a failed sign-in with "No 'Access-Control-Allow-Origin' header".
+    //
+    // Only requests that are safe to repeat are retried. POST /analyze must
+    // never be retried: it spends provider credits and the first attempt may
+    // have succeeded. GETs and /auth/* cannot double-charge or double-submit.
     this.api.interceptors.response.use(
       (response) => response,
-      (error) => Promise.reject(error)
+      async (error) => {
+        const config: any = error.config || {};
+        const status = error.response?.status;
+        const transient = !error.response || [502, 503, 504].includes(status);
+        const method = String(config.method || 'get').toLowerCase();
+        const safeToRepeat = ['get', 'head'].includes(method) || /\/auth\//.test(String(config.url || ''));
+        const attempt = config.__retries || 0;
+
+        if (transient && safeToRepeat && attempt < 3) {
+          config.__retries = attempt + 1;
+          await new Promise((resolve) => setTimeout(resolve, 2000 * config.__retries));
+          return this.api.request(config);
+        }
+        return Promise.reject(error);
+      }
     );
   }
 
