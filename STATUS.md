@@ -81,7 +81,7 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   older, duplicate Vercel project (root dir `frontend`, Dec 2025) still serving a stale build.
 - **Dossier cache + spend guard made real (Nov 2026):** `dossier_cache` stores the last raw dossier
   per (user, platform, profile) with a TTL (`DOSSIER_CACHE_TTL_HOURS`, default 12), so re-analysis and
-  regeneration reuse collected data instead of spending another ~14 credits; empty dossiers are never
+  regeneration reuse collected data instead of spending another 24 credits; empty dossiers are never
   cached, expired entries are purged by the retention job, and the coverage strip says when a run
   reused a cached dossier (with its collection time). The last observed provider balance now lives in
   `provider_credit_usage` (Postgres) rather than a JSON file beside the code — that file was invisible
@@ -132,6 +132,18 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   share an operator-local scope (`DossierCache` owner `0`, distinct from every web user) backed by the
   same local database; a shared app is created once for the session. Unit tests install a barrier so an
   analyzer test without an app context can never read or write the developer's real database.
+- **Progress reports stages, not a timer (Nov 2026):** a deep run used to sit at a frozen 10%
+  "Processing" for its first eight minutes, and with no logs visible to the user a working run looked
+  identical to a hung one. The collector now emits each finished step with its own counts ("collected
+  posts (46 items)", "reading comments on 3 posts") and the bar moves only when a step completes, so a
+  stall holds still instead of creeping. The single model pass owns 76–92% and its message says so —
+  measured live at 606s for a cached run, i.e. the model call is the long pole and nothing else can be
+  reported until it returns. A failing progress writer is logged and ignored: it can never take down a
+  run that was already paid for.
+- **Credit estimate corrected to measured cost (Nov 2026):** the guard priced a deep run at 14 credits
+  while three funded runs cost 23, 24 and 24, so it would release a run with ~10 credits too few.
+  `RUN_CREDIT_ESTIMATES["deep"]` is now 24. `quick` stays at the old conservative 4 because no quick
+  run has been measured on the funded key — flagging it rather than replacing one guess with another.
 - **A finished analysis is committed before its snapshot (Nov 2026):** the snapshot step rolls back on
   failure, and the result payload was still uncommitted at that point — a failed history write erased a
   completed analysis (task 21: status completed, no result, no error). The result now commits first, so a
@@ -140,7 +152,9 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
 - **Absent badge is missing input (Nov 2026):** live runs kept listing "Not verified — no platform
   authenticity badge" as a red flag while "Account age unknown" was correctly a data gap. The gap test
   now recognises the phrasings models actually produce ("not verified", "no platform identity
-  confirmation"). Verified on a fresh run: that line lands in `data_gaps`, not `red_flags`.
+  confirmation", "unavailable"). Verified on re-runs of `sahab0769`: task 25 still carried one
+  "...unavailable — limits network-level validation" line, task 26 came back with `red_flags: []` and all
+  four missing-input lines in `data_gaps`. Both re-runs reused the cached dossier and spent 0 credits.
 - **One snapshot is not "no change" (Nov 2026):** with a single snapshot the results payload returned no
   `alerts` at all, which reads the same as a clean comparison. It now returns every rule as
   `not_evaluated` with the reason ("only one snapshot stored for this subject").
