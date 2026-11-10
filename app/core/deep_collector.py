@@ -397,11 +397,26 @@ class DeepDossierCollector:
         
         return result
     
+    @staticmethod
+    def _stage(on_stage, name: str, note: str, done: int = None, total: int = None) -> None:
+        """Tell a caller what just happened, never how long anything should take.
+
+        Progress here is counted work (feeds fetched, posts read), so a callback
+        that fails must not take the collection down with it.
+        """
+        if on_stage is None:
+            return
+        try:
+            on_stage(name, note, done, total)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Progress callback failed at {name}: {exc}")
+
     def deep_dossier(self, platform: str, username: str, 
                      include_comments: bool = True,
                      include_transcripts: bool = True,
                      max_content_items: int = 50,
-                     max_comments_per_item: int = 30) -> Dict[str, Any]:
+                     max_comments_per_item: int = 30,
+                     on_stage=None) -> Dict[str, Any]:
         """
         Perform a comprehensive deep dossier collection.
         Collects: Everything available (2-5 minutes)
@@ -456,6 +471,7 @@ class DeepDossierCollector:
             
         config = self.SUPPORTED_PLATFORMS[platform]
         api_calls = 0
+        self._stage(on_stage, 'profile', f'fetching the profile for {username}')
         
         # 1. Get profile
         try:
@@ -503,7 +519,9 @@ class DeepDossierCollector:
                 result['errors'].append(f"Profile error: {str(e)}")
         
         # 2. Execute all deep methods
-        for data_key, method_name, params in config.get('deep_methods', []):
+        feeds = config.get('deep_methods', [])
+        self._stage(on_stage, 'feeds', f"profile collected; reading {len(feeds)} feeds", 0, len(feeds))
+        for feed_index, (data_key, method_name, params) in enumerate(feeds, start=1):
             try:
                 method = getattr(self.client, method_name, None)
                 if method:
@@ -543,6 +561,11 @@ class DeepDossierCollector:
             except Exception as e:
                 result['errors'].append(f"{data_key} error: {str(e)}")
                 logger.warning(f"Failed to get {data_key} for {username}: {e}")
+            self._stage(
+                on_stage, 'feeds',
+                f"read {feed_index} of {len(feeds)} feeds ({len(result['content'])} posts so far)",
+                feed_index, len(feeds),
+            )
         
         # Merge the per-endpoint feeds into one unique set before anything is
         # measured or paid for again (comments, transcripts).
@@ -560,7 +583,9 @@ class DeepDossierCollector:
             comments_method = getattr(self.client, config['comments_method'], None)
             if comments_method:
                 commented = set()
-                for item in result['content'][:10]:  # Limit to first 10 items
+                comment_targets = result['content'][:10]  # Limit to first 10 items
+                self._stage(on_stage, 'comments', f"reading comments on {len(comment_targets)} posts", 0, len(comment_targets))
+                for read_index, item in enumerate(comment_targets, start=1):
                     try:
                         item_id = item.get('id') or item.get('video_id') or item.get('post_id')
                         # Never pay twice for the same post, even if it reached
@@ -575,12 +600,20 @@ class DeepDossierCollector:
                             api_calls += 1
                     except Exception as e:
                         logger.warning(f"Failed to get comments for item: {e}")
+                    self._stage(
+                        on_stage, 'comments',
+                        f"read comments on {read_index} of {len(comment_targets)} posts "
+                        f"({result['comments_analysis']['total_comments_collected']} comments)",
+                        read_index, len(comment_targets),
+                    )
         
         # 4. Get transcripts for video content
         if include_transcripts and config.get('transcript_method') and result['content']:
             transcript_method = getattr(self.client, config['transcript_method'], None)
             if transcript_method:
-                for item in result['content'][:5]:  # Limit to first 5 items
+                transcript_targets = result['content'][:5]  # Limit to first 5 items
+                self._stage(on_stage, 'transcripts', f"reading transcripts of {len(transcript_targets)} videos", 0, len(transcript_targets))
+                for read_index, item in enumerate(transcript_targets, start=1):
                     try:
                         item_id = item.get('id') or item.get('video_id')
                         if item_id:
@@ -593,8 +626,14 @@ class DeepDossierCollector:
                                 api_calls += 1
                     except Exception as e:
                         logger.warning(f"Failed to get transcript for item: {e}")
+                    self._stage(
+                        on_stage, 'transcripts',
+                        f"read transcript {read_index} of {len(transcript_targets)}",
+                        read_index, len(transcript_targets),
+                    )
         
         # 5. Age/Gender prediction from profile image
+        self._stage(on_stage, 'enrichment', 'predicting demographics and looking for other accounts')
         try:
             profile_image = None
             if result['profile']:
@@ -643,6 +682,12 @@ class DeepDossierCollector:
         result['collection_time_seconds'] = round(time.time() - self.collection_start_time, 2)
         
         logger.info(f"Deep dossier completed in {result['collection_time_seconds']}s with {api_calls} API calls")
+        self._stage(
+            on_stage, 'collected',
+            f"collected {len(result['content'])} posts and "
+            f"{result['comments_analysis']['total_comments_collected']} comments "
+            f"in {api_calls} calls",
+        )
         
         return result
     

@@ -29,9 +29,13 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _USAGE_PATH = os.path.join(_PROJECT_ROOT, "data", "provider_usage.json")
 
-# Measured on real Facebook deep runs: ~13-14 calls each. A quick run needs the
-# profile plus one page of posts.
-RUN_CREDIT_ESTIMATES = {"deep": 14, "quick": 4}
+# Measured against the funded key (Nov 2026), balance before minus after the
+# run: 23, 24 and 24 credits for three Facebook deep runs. The earlier 13-14
+# was a call count, not the price, so the pre-flight guard under-booked a run by
+# roughly ten credits. A quick run (profile plus one page of posts) has not been
+# measured on the new key; it is left at the old conservative floor rather than
+# replaced by a second guess.
+RUN_CREDIT_ESTIMATES = {"deep": 24, "quick": 4}
 
 
 def _key_fingerprint() -> Optional[str]:

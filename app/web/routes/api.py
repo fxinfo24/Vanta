@@ -10,6 +10,7 @@ import json
 import threading
 import re
 import os
+import time
 import logging
 
 from app.core.analyzer import SocialMediaAnalyzer
@@ -399,6 +400,40 @@ def update_settings():
     return jsonify(_settings_payload(fake_user, fake_settings, user_keys))
 
 
+def _task_progress(task_id: int):
+    """Persist real stage progress for a run that takes minutes.
+
+    The status endpoint is polled, so progress has to survive in the task row.
+    The percentage only moves when the analyzer reports a completed step; a
+    stalled run holds its number instead of creeping forward. A failed write is
+    logging noise, never a reason to abandon an analysis already paid for.
+    """
+    state = {"percent": 10, "message": "", "last": 0.0}
+
+    def report(message, percent=None):
+        text = str(message)[:250]
+        target = state["percent"]
+        if percent is not None:
+            target = max(target, min(97, int(percent)))
+        if target == state["percent"] and text == state["message"]:
+            return
+        now = time.time()
+        # A new step is worth a write; a reworded message alone is throttled.
+        if target == state["percent"] and now - state["last"] < 3.0:
+            return
+        state.update(percent=target, message=text, last=now)
+        try:
+            Task.query.filter_by(id=task_id).update(
+                {"progress": target, "message": text}, synchronize_session=False
+            )
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logger.warning(f"Could not persist progress for task {task_id}: {exc}")
+
+    return report
+
+
 def run_analysis(task_id: int, platform: str, profile_id: str, app=None, mode: str = "deep"):
     """Run analysis in background thread
     
@@ -435,8 +470,10 @@ def run_analysis(task_id: int, platform: str, profile_id: str, app=None, mode: s
             task.message = "Processing"
             db.session.commit()
 
-            # Run the actual analysis
-            result = analyzer.analyze_profile(platform, profile_id, mode=mode)
+            # Run the actual analysis, publishing each completed stage
+            result = analyzer.analyze_profile(
+                platform, profile_id, mode=mode, progress=_task_progress(task_id)
+            )
 
             # Canonical: persist in DB; file is best-effort fallback for debugging.
             # Committed immediately: the snapshot step below rolls back on

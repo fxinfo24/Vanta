@@ -34,6 +34,89 @@ def analyzer(tmp_path, test_config):
     return SocialMediaAnalyzer(str(config_file))
 
 
+def test_deep_collection_reports_completed_steps_not_elapsed_time():
+    """Progress narrates work that finished: feeds read, posts commented on."""
+    from app.core.deep_collector import DeepDossierCollector
+
+    class FakeClient:
+        def get_facebook_profile(self, username):
+            return {"username": username, "follower_count": 100}
+
+        def get_facebook_posts(self, username, count=30):
+            return [{"id": "p1", "text": "hello there friend"}]
+
+        def get_facebook_reels(self, username, count=20):
+            return [{"id": "r1", "text": "a reel text here"}]
+
+        def get_facebook_comments(self, post_id, count=30):
+            return [{"text": "nice"}, {"text": "agreed"}]
+
+        def get_facebook_transcript(self, post_id):
+            return {"transcript": "spoken words"}
+
+        def get_age_and_gender(self, url):
+            return {"age": 30, "gender": "male"}
+
+    events = []
+    collector = DeepDossierCollector(client=FakeClient())
+    collector.cross_platform_discovery = lambda *a, **k: {"discovered_accounts": {}}
+    collector.deep_dossier(
+        platform="facebook", username="someone",
+        on_stage=lambda name, note, done, total: events.append((name, note, done, total)),
+    )
+
+    stages = [e[0] for e in events]
+    assert stages[0] == "profile"
+    assert "feeds" in stages and "comments" in stages and "collected" in stages
+    feed_events = [e for e in events if e[0] == "feeds"]
+    assert feed_events[0][3] == 2, "two facebook feeds are planned"
+    assert "2 of 2 feeds" in feed_events[-1][1]
+    comment_events = [e for e in events if e[0] == "comments"]
+    # Two unique items survived dedupe, so two posts get comments read.
+    assert comment_events[-1][2] == comment_events[-1][3] == 2
+    assert "4 comments" in comment_events[-1][1]
+    collected = events[-1][1]
+    assert "posts" in collected and "comments" in collected
+
+
+def test_analyzer_progress_never_moves_backwards(analyzer, monkeypatch):
+    """Percentages follow completed stages and never regress."""
+    seen = []
+
+    class FakeCollector:
+        def deep_dossier(self, platform, username, on_stage=None, **kwargs):
+            on_stage("profile", "fetching the profile", None, None)
+            on_stage("feeds", "read 1 of 2 feeds (5 posts so far)", 1, 2)
+            on_stage("feeds", "read 2 of 2 feeds (9 posts so far)", 2, 2)
+            return {
+                "profile": {"username": username, "follower_count": 100},
+                "content": [{"id": "p1", "text": "hello there"}],
+                "comments_analysis": {"total_comments_collected": 4},
+                "statistics": {},
+            }
+
+    class FakeIntel:
+        def generate_full_report(self, dossier):
+            return {"core_intelligence": {}, "executive_summary": "x"}
+
+    monkeypatch.setattr(
+        "app.core.deep_collector.create_deep_collector", lambda *a, **k: FakeCollector()
+    )
+    monkeypatch.setattr(
+        "app.core.intelligence_analyzer.create_intelligence_analyzer", lambda *a, **k: FakeIntel()
+    )
+
+    analyzer.analyze_profile(
+        "facebook", "someone", progress=lambda m, p: seen.append((m, p))
+    )
+
+    percents = [p for _, p in seen if p is not None]
+    assert percents == sorted(percents), percents
+    assert percents[0] >= 10 and percents[-1] >= 90
+    # Counts in the text are the ones actually collected.
+    assert any("1 posts and 4 comments" in m for m, _ in seen)
+
+
 def test_analyzer_initialization(analyzer):
     """Test analyzer initialization with config"""
     # Analyzer initializes components lazily or in __init__
@@ -454,3 +537,68 @@ def test_coverage_reports_collection_failures():
 
     assert coverage["measured"] == []
     assert coverage["collection_errors"] == ["Profile error: CREDITS_EXHAUSTED: 402"]
+
+
+@patch("app.core.intelligence_analyzer.create_intelligence_analyzer")
+@patch("app.core.deep_collector.create_deep_collector")
+def test_progress_reports_counted_stages_not_a_timer(mock_deep_factory, mock_intel_factory, analyzer):
+    """Six minutes of silence at 10% was indistinguishable from a hung run.
+
+    Progress must come from steps the collector actually finished - feeds
+    fetched, posts read - so the percentage is a count, never a clock.
+    """
+    mock_collector = Mock()
+
+    def deep_dossier(**kwargs):
+        on_stage = kwargs["on_stage"]
+        on_stage("profile", "fetching the profile for test_user", None, None)
+        on_stage("feeds", "profile collected; reading 2 feeds", 0, 2)
+        on_stage("feeds", "collected posts (46 items)", 1, 2)
+        on_stage("feeds", "collected reels (12 items)", 2, 2)
+        on_stage("comments", "reading comments on 3 posts", 1, 3)
+        on_stage("collected", "collected 50 posts and 71 comments in 240s", 1, 1)
+        return {"profile": {"username": "test_user", "follower_count": 100},
+                "content": [{"text": "post"}] * 50,
+                "comments_analysis": {"total_comments_collected": 71},
+                "statistics": {}, "connected_accounts": [], "errors": []}
+
+    mock_collector.deep_dossier.side_effect = deep_dossier
+    mock_deep_factory.return_value = mock_collector
+    mock_intel = Mock()
+    mock_intel.generate_full_report.return_value = {
+        "core_intelligence": {"general_analysis": {}, "authenticity": {}, "predictions": {}},
+        "belief_system": {}, "consumer_profile": {}, "executive_summary": "",
+    }
+    mock_intel_factory.return_value = mock_intel
+
+    seen = []
+    analyzer.analyze_profile("facebook", "test_user", progress=lambda m, p: seen.append((m, p)))
+
+    messages = [m for m, _ in seen]
+    percents = [p for _, p in seen if p is not None]
+    assert "collected posts (46 items)" in messages
+    assert any("71 comments" in m for m in messages)
+    assert percents == sorted(percents), "the bar must not move backwards"
+    assert percents[0] < 48 <= percents[-1], "collection work must move the bar"
+    assert seen[-1][1] == 92 or seen[-1][0].startswith("report written")
+
+
+@patch("app.core.intelligence_analyzer.create_intelligence_analyzer")
+@patch("app.core.deep_collector.create_deep_collector")
+def test_a_failing_progress_callback_cannot_break_a_paid_run(mock_deep_factory, mock_intel_factory, analyzer):
+    """Reporters are best-effort: a UI problem must not lose collected data."""
+    mock_deep_factory.return_value = Mock(deep_dossier=Mock(return_value={
+        "profile": {"username": "test_user", "follower_count": 1},
+        "content": [], "comments_analysis": {}, "statistics": {},
+        "connected_accounts": [], "errors": [],
+    }))
+    mock_intel_factory.return_value = Mock(generate_full_report=Mock(return_value={
+        "core_intelligence": {"general_analysis": {}, "authenticity": {}, "predictions": {}},
+        "belief_system": {}, "consumer_profile": {}, "executive_summary": "",
+    }))
+
+    def explode(message, percent):
+        raise RuntimeError("status writer is down")
+
+    results = analyzer.analyze_profile("facebook", "test_user", progress=explode)
+    assert results["metadata"]["platform"] == "facebook"

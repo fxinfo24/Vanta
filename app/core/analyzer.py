@@ -237,7 +237,31 @@ class SocialMediaAnalyzer:
             },
         }
 
-    def analyze_profile(self, platform: str, profile_id: str, mode: str = "deep") -> Dict[str, Any]:
+    # Each collection stage owns a slice of the bar. The percentage moves only
+    # when a real step completes, so a run that stalls on one feed holds still
+    # instead of creeping toward a finish it has not reached.
+    _STAGE_BANDS = {
+        "profile": (10, 14),
+        "feeds": (14, 48),
+        "comments": (48, 62),
+        "transcripts": (62, 68),
+        "enrichment": (68, 72),
+        "collected": (72, 74),
+    }
+
+    @staticmethod
+    def _stage_percent(stage: str, done, total) -> Optional[int]:
+        band = SocialMediaAnalyzer._STAGE_BANDS.get(stage)
+        if band is None:
+            return None
+        start, end = band
+        if not total:
+            return start
+        fraction = min(max(float(done or 0) / float(total), 0.0), 1.0)
+        return int(round(start + (end - start) * fraction))
+
+    def analyze_profile(self, platform: str, profile_id: str, mode: str = "deep",
+                        progress=None) -> Dict[str, Any]:
         """
         Perform complete analysis of a social media profile using Enhanced Engines (Phase 2 & 3)
         Args:
@@ -248,6 +272,21 @@ class SocialMediaAnalyzer:
             Complete analysis results
         """
         self.logger.info(f"Starting {mode.upper()} analysis of {profile_id} on {platform}")
+
+        last_reported = {"message": None}
+
+        def report(message: str, percent: Optional[int] = None) -> None:
+            """Report what is happening now; repeats are dropped."""
+            if progress is None or message == last_reported["message"]:
+                return
+            last_reported["message"] = message
+            try:
+                progress(message, percent)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.logger.warning(f"Progress reporting failed: {exc}")
+
+        def on_stage(stage: str, note: str, done=None, total=None) -> None:
+            report(note, self._stage_percent(stage, done, total))
 
         try:
             # ═══════════════════════════════════════════════════════════════
@@ -261,6 +300,11 @@ class SocialMediaAnalyzer:
                     f"Reusing cached dossier for {platform}/{profile_id} "
                     f"(collected {dossier_data.get('collected_at')}); 0 credits spent"
                 )
+                report(
+                    f"reusing the dossier collected {str(dossier_data.get('collected_at'))[:16]} "
+                    f"(no provider credits spent)",
+                    self._stage_percent("collected", None, None),
+                )
             else:
                 from .deep_collector import create_deep_collector
 
@@ -269,6 +313,8 @@ class SocialMediaAnalyzer:
 
                 if mode == 'quick':
                     # Quick Scan: 10 seconds, limited data
+                    report("collecting the profile and 10 recent posts",
+                           self._stage_percent("profile", None, None))
                     dossier_data = collector.quick_scan(platform, profile_id)
                 else:
                     # Deep Dossier: 2-5 mins, full data
@@ -276,7 +322,8 @@ class SocialMediaAnalyzer:
                         platform=platform,
                         username=profile_id,
                         include_comments=True,
-                        include_transcripts=True
+                        include_transcripts=True,
+                        on_stage=on_stage,
                     )
                 dossier_data['source'] = 'live'
                 # Only a run that actually collected something may seed the cache;
@@ -296,8 +343,18 @@ class SocialMediaAnalyzer:
             # Use the new Master Intelligence Analyzer
             intelligence_engine = create_intelligence_analyzer()
             
-            # Generate the full comprehensive report
+            # Generate the full comprehensive report. One LLM pass, so the bar
+            # has nothing honest to say until it returns.
+            posts = len(dossier_data.get('content') or [])
+            comments = ((dossier_data.get('comments_analysis') or {})
+                        .get('total_comments_collected') or 0)
+            report(
+                f"writing the report from {posts} posts and {comments} comments "
+                f"(one model pass, no partial output)",
+                76,
+            )
             full_report = intelligence_engine.generate_full_report(dossier_data)
+            report("report written; assembling sections and coverage", 92)
             
             # ═══════════════════════════════════════════════════════════════
             # MAP TO FRONTEND SCHEMA
