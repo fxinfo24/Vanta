@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import api from '@/services/api';
 import {
@@ -115,9 +115,7 @@ const ResultView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
 
-  useEffect(() => { loadResults(); }, [id]);
-
-  const loadResults = async () => {
+  const loadResults = useCallback(async () => {
     try {
       setLoading(true);
       const taskRes = await api.getTask(Number(id));
@@ -128,7 +126,9 @@ const ResultView: React.FC = () => {
       }
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
-  };
+  }, [id]);
+
+  useEffect(() => { loadResults(); }, [loadResults]);
 
   // A bare window.open() to /api/... cannot carry the Bearer token, so the
   // auth guard answered 401 and the new tab showed a raw JSON error. Fetch
@@ -170,7 +170,7 @@ const ResultView: React.FC = () => {
     results.content_analysis?.personality_traits ||
     results.content_analysis?.psychological_profile || {}
   )
-    .filter(([_, val]) => typeof val === 'number')
+    .filter(([, val]) => typeof val === 'number')
     .map(([key, val]) => ({ subject: key.charAt(0).toUpperCase() + key.slice(1), A: (val as number) * 100, fullMark: 100 }));
 
   // Backend keys use underscores (SOCIAL_VALUES); keep the spaced variant

@@ -1,5 +1,5 @@
 // TaskView Component - Premium Glass UI
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import api from '@/services/api';
 import {
@@ -31,19 +31,7 @@ const TaskView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadTask();
-    // 4s instead of 3s: progress is reported per stage, and a faster poll only
-    // adds load to the single backend worker without showing anything new.
-    const interval = setInterval(() => {
-      if (task && (task.status === 'pending' || task.status === 'processing')) {
-        loadTask();
-      }
-    }, 4000);
-    return () => clearInterval(interval);
-  }, [id, task?.status]);
-
-  const loadTask = async () => {
+  const loadTask = useCallback(async () => {
     try {
       setLoading(true);
       const response = await api.getTask(Number(id));
@@ -54,7 +42,19 @@ const TaskView: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  // Poll only while the run can still change. 4s instead of 3s: progress is
+  // reported per stage, so a faster poll only adds load to the single backend
+  // worker without showing anything new.
+  const status = task?.status;
+  useEffect(() => {
+    loadTask();
+    const interval = setInterval(() => {
+      if (status === 'pending' || status === 'processing') loadTask();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [loadTask, status]);
 
   const handleRetry = async () => {
     try {

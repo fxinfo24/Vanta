@@ -1,5 +1,5 @@
 // TasksList Component - Premium Glass UI
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import api from '@/services/api';
 import AnalysisForm from '@/components/AnalysisForm';
@@ -34,25 +34,8 @@ const TasksList: React.FC = () => {
 
   const hasActiveTasks = tasks.some(t => ['pending', 'processing'].includes(t.status));
 
-  // Load once per filter change.
-  useEffect(() => {
-    loadTasks(true);
-  }, [filter.platform, filter.status]);
-
-  // Poll only while something is actually moving. A finished list needs no
-  // traffic, and 4s is still responsive for stage-level progress on a
-  // single-worker backend. Previously the interval read a stale `tasks`
-  // snapshot, so it could keep polling a list that had already settled.
-  useEffect(() => {
-    const shouldPoll =
-      hasActiveTasks || filter.status === 'processing' || filter.status === 'pending';
-    if (!shouldPoll) return;
-    const intervalId = setInterval(() => loadTasks(false), 4000);
-    return () => clearInterval(intervalId);
-  }, [hasActiveTasks, filter.status]);
-
   // Optimize loadTasks to handle silent updates
-  const loadTasks = async (isManual = false) => {
+  const loadTasks = useCallback(async (isManual = false) => {
     try {
       if (isManual) setLoading(true);
       const params = new URLSearchParams();
@@ -66,7 +49,24 @@ const TasksList: React.FC = () => {
     } finally {
       if (isManual) setLoading(false);
     }
-  };
+  }, [filter.platform, filter.status]);
+
+  // Load once per filter change.
+  useEffect(() => {
+    loadTasks(true);
+  }, [loadTasks]);
+
+  // Poll only while something is actually moving. A finished list needs no
+  // traffic, and 4s is still responsive for stage-level progress on a
+  // single-worker backend. Previously the interval read a stale `tasks`
+  // snapshot, so it could keep polling a list that had already settled.
+  useEffect(() => {
+    const shouldPoll =
+      hasActiveTasks || filter.status === 'processing' || filter.status === 'pending';
+    if (!shouldPoll) return;
+    const intervalId = setInterval(() => loadTasks(false), 4000);
+    return () => clearInterval(intervalId);
+  }, [hasActiveTasks, filter.status, loadTasks]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
