@@ -202,6 +202,7 @@ and 390 px mobile. Repo scan: **no provider secret in any tracked file or commit
 | **Medium** | Neither origin sent baseline security headers (nosniff, frame-options, referrer-policy, permissions-policy, CSP) | `vercel.json` headers block + `after_request` on the Flask app | Live header check on both hosts |
 | **Medium** | Build tooling (`vite`, `postcss`, `typescript`, `@types/*`) was declared as **runtime** dependencies, so audits reported packages that never reach the bundle | Moved to `devDependencies` (lockfile regenerated) | `npm audit --omit=dev` clean, build unchanged |
 | **Medium** | `npm run lint` scanned `dist/` and could never pass, hiding real findings | `--ignore-pattern dist`; missing hook dependencies fixed with `useCallback` in `TasksList`/`TaskView`/`ResultView` | `npm run lint` exits 0, `tsc --noEmit` clean |
+| **Medium** | Nothing identified a failing request in production: no request id, no timing, no per-request log | `before_request`/`after_request` in the factory stamp `X-Request-ID`, log `METHOD path -> status in Nms req=…` (WARNING above 1 s, path only — never query strings or bodies) | `X-Request-ID` present on `/api/health`; 97 tests still pass |
 | **Low** | Download route returned internal exception text and wrote `DEBUG:` lines to stdout | Logged with `exc_info`, generic message to the client | 500 path reviewed; happy path 200 |
 | **Low** | Task polling ran at 2–3 s forever and read a **stale `tasks` snapshot** (could poll a settled list, or miss a newly started run) | Poll only while a run is pending/processing, 4 s, deps on the derived `hasActiveTasks` | Tasks list + task view live |
 | **Low** | Production CORS defaults pointed at retired `profile-scope` hosts | Default list now `https://vanta-intel.vercel.app` + Vite dev origin | `CORS_ORIGINS` is set in Render; defaults only matter if it is unset |
@@ -232,6 +233,12 @@ endpoint adds a hop. Cold start after 15 idle minutes is 15–74 s.
 | `/login` | 203 KB | **93 KB** | 1.1–1.4 s | 1.3–2.1 s | 0 |
 | `/dashboard` | 213 KB | 196 KB | 0.6–1.2 s | 2.6–3.5 s | 0.084 |
 | `/tasks/26/results` | 217 KB | 217 KB | 0.7–0.9 s | 3.5–3.9 s | 0.004 |
+
+**Load test** (`/tasks/26/results`, 3 rounds at concurrency 1 / 5 / 10): every
+request 200, p50 1.5–2.3 s, max 3.9 s. One 502 and one read timeout occurred in
+a run that overlapped the Render restart of the deploy that had just landed; 40
+repeat requests afterwards (conc 5 and 10) were clean. Sustained throughput on
+this plan is bounded by 1 worker × 4 threads.
 
 HTML TTFB from the CDN is 45–160 ms. The LCP numbers on the dashboard and report
 are **API-bound**: the shell paints in <1 s and the largest element is data that

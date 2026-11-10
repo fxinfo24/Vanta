@@ -4,8 +4,10 @@ Flask web interface for the Vanta analyzer
 """
 
 import os
+import time
+import uuid
 import logging
-from flask import Flask
+from flask import Flask, g, request
 from flask_migrate import Migrate
 from flask_cors import CORS
 
@@ -106,11 +108,32 @@ def create_app(test_config=None):
          allow_headers=["Content-Type", "Authorization"],
          methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 
+    # One log line per request, with an id a client can quote back and the
+    # duration, so a slow or failed call in production can be traced without a
+    # tracing backend. Slow calls log at WARNING to stand out in Render's log.
+    @app.before_request
+    def _start_request_timer():
+        g.request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+        g.request_started = time.perf_counter()
+
     # Baseline response headers for the API origin itself (Vercel covers the
     # frontend). setdefault keeps anything a route already chose - including the
     # CORS headers that flask-cors adds on the same response.
     @app.after_request
     def _security_headers(response):
+        request_id = getattr(g, "request_id", None)
+        if request_id:
+            response.headers.setdefault("X-Request-ID", request_id)
+        started = getattr(g, "request_started", None)
+        if started is not None:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            # Path only: query strings and bodies can carry user data.
+            logger.log(
+                logging.WARNING if elapsed_ms > 1000 else logging.INFO,
+                "%s %s -> %s in %.0fms req=%s",
+                request.method, request.path, response.status_code, elapsed_ms,
+                request_id or "-",
+            )
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
