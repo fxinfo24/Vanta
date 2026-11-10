@@ -30,8 +30,8 @@ Two products consolidated into **one Flask app** (`app/web/app.py:create_app()`)
   fallback code is wired but runs need a paid plan (console.apify.com/billing).
 - ScrapeCreators: key in `.env`; balance visible only via dashboard / `credits_remaining` in responses
   (no credits API endpoint). New key: ~99 credits at last check.
-- Tests: `pytest` **78 passed / 0 failed** (Nov 2026). The 4 former failures were fixed at root cause: `preprocess_text` now honours its contract (strips URLs + `,.!?`); `analyze_writing_style` vocabulary diversity is uni+bigram TTR and complexity no longer saturates at 1.0; `test_analyze_profile` / `test_full_analysis_flow` were stale (patched legacy `DataCollector` while the analyzer uses `DeepDossierCollector`, causing real API calls that burned ScrapeCreators credits) — they now mock `create_deep_collector` + the intelligence engine, so tests are hermetic. A syntax corruption introduced mid-edit (`}def`) was caught by the same tests and repaired.
-  `tsc --noEmit` clean. ESLint: 103 pre-existing warnings, 0 errors.
+- Tests: `pytest` **97 passed / 0 failed** (Nov 2026). The 4 former failures were fixed at root cause: `preprocess_text` now honours its contract (strips URLs + `,.!?`); `analyze_writing_style` vocabulary diversity is uni+bigram TTR and complexity no longer saturates at 1.0; `test_analyze_profile` / `test_full_analysis_flow` were stale (patched legacy `DataCollector` while the analyzer uses `DeepDossierCollector`, causing real API calls that burned ScrapeCreators credits) — they now mock `create_deep_collector` + the intelligence engine, so tests are hermetic. A syntax corruption introduced mid-edit (`}def`) was caught by the same tests and repaired.
+  `tsc --noEmit` clean. ESLint: 0 warnings, 0 errors (dist is no longer scanned).
 - 7-layer verification E2E (verified live, Nov 2026): ingest → extract (2 FACTUAL claims,
   check-worthiness 0.6) → Layers 4–7 all execute, evidence_chain persists `layer_4..7`. Keys now wired: `GOOGLE_FACT_CHECK_API_KEY` + `NEWSAPI_KEY` in `.env` (never commit). **Proven real verdict:** claim "2020 US election was stolen / Trump won" → Layer 4 `VERIFIED_FALSE` matched to **USA Today** ("President Donald Trump did not win 2020 election", similarity 0.347), final status `VERIFIED_FALSE`, composite 0.625, Layer 7 `CONFIDENT`. Layer 5 NewsAPI found 16 real articles; Layer 6 Nemotron returned grounded reasoning. **Semantic matcher (Nov 2026):** Layer 4 now embeds claim + fact-checks via OpenRouter `/embeddings` (`openai/text-embedding-3-small`, 1536-dim, live 200; override `EMBEDDING_MODEL`), cosine threshold 0.55 (measured: paraphrase 0.695–0.703, related-but-different 0.37, unrelated ≤0.11). Same USA Today match now scores **0.703** (was 0.347 lexical). If the embedding API fails, a pure-Python TF-IDF cosine is used and labelled `tfidf_fallback` on every match — never silently presented as semantic. **Evidence corpus (Layer 6):** live discovery per claim — web-fetches real page text of L4/L5 URLs, Wikipedia REST summary, GDELT wide-window, NewsAPI ±365d — ranked by embedding similarity; proven live (evidence_count 7–8, Wikipedia "Big lie" article retrieved). No vector DB (no dependency); it is a live-fetched ranked corpus, not a persisted index. **Human review:** `POST /verification/claim/<id>/review` (approve/override, reviewer + note) writes `human_override` into `layer_7` and clears `needs_human_review` — verified live incl. 400 on invalid verdict. **Duplicate claims fixed:** root cause was Python `hash()` (salted per process) so dedup never matched after restart; now stable SHA-256 of normalized text — re-run verified: claim count stays 1. **Layer 5:** GDELT + Wikipedia added to default sources; relevance is embedding cosine (top article 0.518 → `verified: True`, was TF-IDF 0.144 false-negative); aggregation bug fixed (failed sources were excluded from confidence, inflating L5 to 1.0 — now honest PLAUSIBLE 0.51). Further hardening (Nov 2026): Google client now queries two phrasings (full claim + keyword phrase) and unions results deduped by URL — verified live: 10 unique results for the election claim (mitigates ranking flakiness; ranking itself is still non-deterministic upstream). GDELT Layer 5 window: if the claim names a different year than the post date, it searches that named year instead of ±15d around the post (historical claims). Wikipedia historical lookup fixed: now fetches the newest revision at/before the target date via `rvstart`/`rvdir=older` (old code fetched the 50 oldest revisions) — verified live: "2020 United States presidential election", revision 2026-11-06. ClaimBuster client no longer returns mock heuristic scores: without a key it returns `score: None, source: "unavailable"` and filtering passes claims through (see provider table). `fullfact` client honestly returns `[]` instead of a fabricated example. DB cleanup: 3 pre-existing duplicate claims (salted-hash era) removed, keeping the verified copy (backup `data/vanta.db.pre_dedupe_bak`). Remaining caveats: Google ranking is still non-deterministic upstream (multi-query mitigates, cannot eliminate); GDELT contemporaneous window finds nothing when a claim names no year (corpus wide-window covers this); ClaimBuster still has no key (see below). Live-DB schema bug found + fixed: `social_media_posts.id` was INTEGER (old schema) vs String PK model → every `/verification/post` 500'd with `datatype mismatch`; verification tables were empty so they were dropped + recreated (backup: `data/vanta.db.bak`). Bugs fixed Nov 2026: Google client parsed a non-existent nested `claim` wrapper (claim text always empty → matcher dropped everything); engine `maxAgeDays` 365→3650; Layer 6 hardcoded `claude-3.5-sonnet` (404) → `OPENROUTER_MODEL`/Nemotron; Layer 6 no longer overwrites a concrete L4 verdict with evidence-less `UNVERIFIABLE`; JSON `evidence_chain` in-place mutation was being lost (now reassigned in L5/L6/L7); NewsAPI stopwords fixed.
 
@@ -178,6 +178,110 @@ Not implemented in this repo: WebSockets, team/billing endpoints (`app/enterpris
   Earlier exhausted-key failures remain visible on task 18/19.
 - Migrations: fresh DBs use `db.create_all()`; existing DBs run
   `flask db stamp 6a95d7308ea3 && flask db upgrade` (adds `task.result_data`, verification superset cols).
+
+## Production audit — Nov 2026 (GitHub → Vercel → Render → Neon)
+
+Measured against the live stack (`vanta-intel.vercel.app`, `vanta-api-9bqv.onrender.com`,
+Neon pooled endpoint), not a local build. Acceptance driver: `.tmp/prodcheck.mjs`
+(headless Chromium over CDP, no test dependency added) — **28/28 checks pass,
+0 unexpected HTTP errors**, including expired-token, logout, hard refresh, incognito
+and 390 px mobile. Repo scan: **no provider secret in any tracked file or commit**.
+
+### Fixed (severity → what it was → how it is now)
+
+| Sevr | Defect | Fix | Verified |
+|---|---|---|---|
+| **High** | `GET /tasks/<id>/results` shipped the whole stored dossier: **534,408 → now 23,331 bytes** (−95.6%). The report only reads `raw_dossier.social_graph`. | `_slim_dossier()` serves `{social_graph, statistics}` and sets `raw_dossier_trimmed`; full object behind `?include_raw=1` | `include_raw=1` still returns 534,408; JSON export still 583,467 bytes (200) |
+| **High** | Login, register, password-reset and `/analyze` had **no rate limit** (public endpoint, password guessing, 24 credits per run) | `throttle()` fixed-window counters in `app/web/auth.py`: login 10/5 min/IP, register 5/h/IP, reset mail 10/15 min/IP, analyze 10/10 min/user | Live: 6th register attempt → **429 + Retry-After**; login bucket unaffected |
+| **High** | `main` has **no branch protection** and the repo is **public**; secret scanning and push protection were **off** | Enabled secret scanning, push protection and Dependabot security updates via the GitHub API | `security_and_analysis` now reports all three `enabled` |
+| **High** | Hashed assets were served `cache-control: public, max-age=0, must-revalidate` → every page load re-requested ~200 KB of JS | `vercel.json`: `/assets/*` → `max-age=31536000, immutable`; HTML stays `must-revalidate` | Live header check on `assets/index-*.js` |
+| **High** | `axios` and `react-router-dom` (both shipped to the browser) carried high-severity advisories | Semver-compatible `npm audit fix` (axios 1.13→1.21, react-router-dom 7.9→7.18) | `npm audit --omit=dev` → **0 vulnerabilities** |
+| **Medium** | Code splitting was defeated by `manualChunks: {charts: ['recharts']}` — Vite preloaded the charting library on **every** route, so the sign-in screen downloaded it | Named chunk removed; Rollup keeps recharts in the lazy chunk of the two chart views | First-load JS on `/login`: **203 → 93 KB**; `index.html` preloads only `vendor` |
+| **Medium** | A subject's **entire** snapshot history was read per results view (each snapshot is ~500 KB of JSON) though only the last 12 are shown | `_subject_snapshots()` takes the window in SQL (`order_by … desc limit 12`, reversed) | History still returns 3 snapshots / 3 changes / alerts for task 26 |
+| **Medium** | Weird fonts: `@import` inside `index.css` meant the font request only started after the CSS parsed | Font stylesheet moved to `index.html` with `preconnect` | No font request warning in console; text uses Inter/Outfit |
+| **Medium** | Neither origin sent baseline security headers (nosniff, frame-options, referrer-policy, permissions-policy, CSP) | `vercel.json` headers block + `after_request` on the Flask app | Live header check on both hosts |
+| **Medium** | Build tooling (`vite`, `postcss`, `typescript`, `@types/*`) was declared as **runtime** dependencies, so audits reported packages that never reach the bundle | Moved to `devDependencies` (lockfile regenerated) | `npm audit --omit=dev` clean, build unchanged |
+| **Medium** | `npm run lint` scanned `dist/` and could never pass, hiding real findings | `--ignore-pattern dist`; missing hook dependencies fixed with `useCallback` in `TasksList`/`TaskView`/`ResultView` | `npm run lint` exits 0, `tsc --noEmit` clean |
+| **Low** | Download route returned internal exception text and wrote `DEBUG:` lines to stdout | Logged with `exc_info`, generic message to the client | 500 path reviewed; happy path 200 |
+| **Low** | Task polling ran at 2–3 s forever and read a **stale `tasks` snapshot** (could poll a settled list, or miss a newly started run) | Poll only while a run is pending/processing, 4 s, deps on the derived `hasActiveTasks` | Tasks list + task view live |
+| **Low** | Production CORS defaults pointed at retired `profile-scope` hosts | Default list now `https://vanta-intel.vercel.app` + Vite dev origin | `CORS_ORIGINS` is set in Render; defaults only matter if it is unset |
+
+### Performance report
+
+**API latency** (warm instance, 20 sequential samples each, p50/p95 ms, all 200):
+
+| Endpoint | p50 | p95 |
+|---|---|---|
+| `/api/health` (no DB) | 526 | 1740 |
+| `/api/auth/me` (1 query) | 745 | 1030 |
+| `/api/tasks?limit=10` | 1127 | 2156 |
+| `/api/tasks/<id>/status` | 953 | 1657 |
+| `/api/tasks/<id>/results` | 1370 | 2415 |
+| `/api/provider/usage` | 1049 | 1758 |
+
+The health endpoint answers in ~526 ms **without touching the database**, and one
+simple query adds ~220 ms. Neither number is application code at this point: the
+service runs on the **free plan (0.1 CPU)** in **oregon**, while Neon lives in
+**us-east-2 (Ohio)** — every DB round trip crosses the country, and the pooled
+endpoint adds a hop. Cold start after 15 idle minutes is 15–74 s.
+
+**Frontend** (headless Chromium, cache disabled, br/gzip transfer):
+
+| Page | JS before | JS after | FCP | LCP | CLS |
+|---|---|---|---|---|---|
+| `/login` | 203 KB | **93 KB** | 1.1–1.4 s | 1.3–2.1 s | 0 |
+| `/dashboard` | 213 KB | 196 KB | 0.6–1.2 s | 2.6–3.5 s | 0.084 |
+| `/tasks/26/results` | 217 KB | 217 KB | 0.7–0.9 s | 3.5–3.9 s | 0.004 |
+
+HTML TTFB from the CDN is 45–160 ms. The LCP numbers on the dashboard and report
+are **API-bound**: the shell paints in <1 s and the largest element is data that
+arrives after `/tasks` or `/tasks/<id>/results` returns. CLS on the dashboard
+(0.084) comes from the stats blocks being filled in after mount — inside the
+"good" threshold, but the first headroom to reclaim.
+
+### Remaining risks (not fixed, with the lever)
+
+1. **Region split (biggest latency lever).** Render oregon ↔ Neon us-east-2.
+   Either move Neon to a us-west-2 branch/endpoint and repoint `DATABASE_URI`, or
+   recreate the Render service in `us-east` — Render cannot change region in
+   place. Expected gain: ~60–120 ms per DB round trip on nearly every endpoint.
+2. **Free plan.** 0.1 CPU, 512 MB, sleeps after 15 min. Render Starter removes
+   sleep and multiplies CPU; it is a billing decision, not a code one.
+3. **No error monitoring.** Nothing reports a production exception. Add Sentry
+   (or equivalent) with `SENTRY_DSN` on Render and a release tied to the commit.
+4. **Rate limits are per process.** Correct today because Render runs
+   `--workers 1`; moving to more workers requires a shared counter (Redis).
+5. **`requirements.txt` uses `>=` lower bounds** — a deploy can pick up a new
+   major. Generate a pinned lock (`pip-compile`) and install from it.
+6. **`esbuild ≤0.24.2` dev-server advisory** remains: it only affects `vite dev`, and
+   the fix requires Vite 8 (breaking). Accepted until a Vite major is planned.
+7. **JWT: 24 h, no server-side revocation.** Logout clears the client token; a
+   stolen token stays valid until expiry. Add a token version/`jti` denylist if
+   that matters.
+8. **CSP allows `'unsafe-inline'` for styles** (React inline `style` props).
+   Removing it needs nonces or a style-attribute refactor.
+
+**Operational note:** the CSP `connect-src` in `vercel.json` names the API host.
+If the backend moves, `VITE_API_BASE_URL` **and** that directive must change
+in the same commit or every API call is blocked by the browser.
+
+### Production readiness checklist
+
+- [x] Env vars present on Render: `DATABASE_URI` (pooled), `SECRET_KEY`,
+      `JWT_SECRET_KEY`, `OPENROUTER_API_KEY`, `SCRAPECREATORS_API_KEY`,
+      `APIFY_API_TOKEN`, `RESEND_API_KEY`, `NEWSAPI_KEY`,
+      `GOOGLE_FACT_CHECK_API_KEY`, `CORS_ORIGINS`, `FRONTEND_URL` (names checked, values never read)
+- [x] `SECRET_KEY`/`JWT_SECRET_KEY` are real values, not the dev fallbacks
+- [x] Health check wired (`/api/health`), auto-deploy from `main`, 1 instance
+- [x] Pooling: `pool_pre_ping`, `pool_recycle=280`, 1 worker × 4 threads fits Neon's connection budget
+- [x] TLS/HSTS on both origins; CORS pre-flight verified from the Vercel origin
+- [x] Secret scanning + push protection + Dependabot security updates enabled
+- [ ] Branch protection on `main` (needs a CI check to be worth enabling)
+- [ ] Error monitoring + uptime alerting (needs a `SENTRY_DSN` and a monitor)
+- [ ] Neon backups/PITR retention confirmed; restore rehearsed once
+- [ ] Rollback rehearsed: Vercel *Instant Rollback* on the previous deployment +
+      Render redeploy of the previous commit; DB migrations are forward-only today
+- [ ] Pinned Python lockfile
 
 ## Docs map
 
