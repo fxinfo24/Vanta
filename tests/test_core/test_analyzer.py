@@ -375,7 +375,28 @@ def test_special_category_sections_are_off_by_default(monkeypatch):
     assert "lifestyle_risks" not in VoluntarilyDetailed.prompt
     assert out["relationships"]["status"] == "not_collected"
     assert out["lifestyle_risks"]["status"] == "not_collected"
+    assert out["relationships"]["code"] == "special_category_not_inferred"
     assert "Avoidant" not in str(out["relationships"])
+    # The payload reaches API consumers, exports and the PDF, so it must not
+    # name internal config keys or policy machinery.
+    for leak in ("privacy.", "allow_special_category_inference", "by policy"):
+        assert leak not in str(out)
+
+
+def test_gated_notice_is_safe_to_publish():
+    """The gated payload is shown to users, exported and rendered in the PDF.
+
+    Regression: it read "...disabled by policy
+    (privacy.allow_special_category_inference)" - an internal config key on screen.
+    """
+    from app.core.behavioral_analyzer import gated_notice
+
+    notice = gated_notice()
+    assert notice["gated"] is True and notice["status"] == "not_collected"
+    assert notice["code"] == "special_category_not_inferred"
+    text = " ".join(str(v) for v in notice.values()).lower()
+    for leak in ("privacy", "allow_special", "policy", "config", "flag"):
+        assert leak not in text
 
 
 def test_special_category_sections_requested_when_enabled(monkeypatch):

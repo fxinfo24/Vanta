@@ -1008,12 +1008,31 @@ def _slim_dossier(payload: dict) -> dict:
     return out
 
 
+def _scrub_gated_notices(value):
+    """Rewrite stored policy-gated sections to the current payload shape.
+
+    Reports generated before Nov 2026 recorded the internal config key in their
+    user-visible reason. Rewriting on read fixes every stored report (and the
+    exports made from it) without editing rows in place.
+    """
+    from app.core.behavioral_analyzer import gated_notice
+
+    if isinstance(value, dict):
+        if value.get("gated") is True:
+            return gated_notice()
+        return {k: _scrub_gated_notices(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_gated_notices(v) for v in value]
+    return value
+
+
 def _with_history(task, payload, include_raw: bool = False):
     """Attach this subject's timeline and the change since the previous run."""
     from app.web.models.dossier import DossierSnapshot
 
     if not isinstance(payload, dict):
         return payload
+    payload = _scrub_gated_notices(payload)
     if not include_raw:
         payload = _slim_dossier(payload)
     try:
@@ -1157,6 +1176,8 @@ def download_results(task_id):
     if not data:
         logger.warning(f"Download requested for task {task_id} with no stored results")
         return jsonify({"error": "Results not found"}), 404
+
+    data = _scrub_gated_notices(data)
 
     if output_format in ['html', 'pdf']:
         try:

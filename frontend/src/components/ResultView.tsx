@@ -655,14 +655,11 @@ const BeliefsTab = ({ results, beliefData }: { results: AnalysisResult; beliefDa
   if (results.belief_system?.gated) {
     return (
       <div className="glass-card p-6 rounded-2xl">
-        <h3 className="text-xl font-bold text-white mb-2">Belief system — not collected</h3>
+        <h3 className="text-xl font-bold text-white mb-2">Belief system — not inferred</h3>
         <p className="text-sm text-white/60 leading-relaxed">
-          {results.belief_system.reason ||
-            'Political, religious and social-belief inference is disabled by policy.'}
-        </p>
-        <p className="text-xs text-white/40 mt-3">
-          These are special-category attributes (political opinions, religion) inferred about someone
-          who did not consent to being analysed, so Vanta does not produce them by default.
+          Vanta does not infer political, religious or social beliefs. These are special-category
+          attributes about someone who did not agree to being analysed, so they are left empty
+          rather than estimated.
         </p>
       </div>
     );
@@ -890,6 +887,18 @@ const ProgressBar = ({ label, value, color }: any) => (
   </div>
 );
 
+// Sections the backend refuses to infer (sensitive personal attributes about a
+// subject who never consented). The API sends a code and a neutral reason; the
+// copy the reader sees lives here, so internal policy/config names can never be
+// printed - and the empty state says what the section is not, instead of the
+// "Unknown"/"N/A" a blank field would imply.
+const NotInferred = ({ children }: { children: React.ReactNode }) => (
+  <div className="text-sm text-white/60 leading-relaxed">
+    <div className="text-amber-200/80 text-xs uppercase tracking-wide mb-1">Not inferred</div>
+    {children}
+  </div>
+);
+
 const LifestyleTab = ({ results }: { results: AnalysisResult }) => {
   const behavior = results.behavioral_profile || {};
   const interests = behavior.interests || {};
@@ -918,10 +927,12 @@ const LifestyleTab = ({ results }: { results: AnalysisResult }) => {
           <HeartIcon className="w-5 h-5 text-pink-400" /> Relationships
         </h3>
         {rel.gated ? (
-          <div className="text-sm text-white/50 leading-relaxed">
-            <div className="text-amber-200/80 text-xs uppercase tracking-wide mb-1">Not collected</div>
-            {rel.reason}
-          </div>
+          <NotInferred>
+            Vanta does not infer someone's relationship or intimacy patterns. That is sensitive
+            personal data about a person who has not agreed to be analysed, so any indicator here
+            would be a guess rather than a measurement. The temperament, interests and professional
+            signals on this tab are observable from public posts and are kept, with receipts.
+          </NotInferred>
         ) : (
         <div className="space-y-4">
           <div>
@@ -1009,10 +1020,11 @@ const LifestyleTab = ({ results }: { results: AnalysisResult }) => {
           <div>
             <div className="text-xs text-red-300/60 uppercase mb-1">Lifestyle Risk Indicators</div>
             {risks.gated ? (
-              <>
-                <div className="text-amber-200/80 text-xs uppercase tracking-wide mb-1">Not collected</div>
-                <p className="text-white/50 text-sm leading-relaxed">{risks.reason}</p>
-              </>
+              <NotInferred>
+                Vanta does not estimate substance use or health risk from social posts. A post is
+                not a diagnosis, and this subject has not agreed to be assessed. If you need a
+                wellness signal, collect it from the person directly rather than inferring it.
+              </NotInferred>
             ) : (
               <>
                 <div className="flex items-center gap-2 mb-2">

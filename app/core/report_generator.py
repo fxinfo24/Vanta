@@ -349,10 +349,17 @@ class DossierReportGenerator:
                 </div>
                 <div>
                     <h3>Relationships</h3>
+                    {% if data.behavior.get('relationships', {}).get('gated') %}
+                    <div style="font-size: 13px; color: #64748b; font-style: italic;">
+                        Not inferred. Relationship and intimacy patterns are sensitive personal data
+                        about someone who has not agreed to being analysed.
+                    </div>
+                    {% else %}
                     <div style="font-size: 13px;">
                         <strong>Style:</strong> {{ data.behavior.get('relationships', {}).get('attachment_style', 'Unknown') }}<br>
                         <strong>Pattern:</strong> {{ data.behavior.get('relationships', {}).get('pattern', 'N/A') }}
                     </div>
+                    {% endif %}
                 </div>
                 <div>
                     <h3>Professional</h3>
@@ -373,7 +380,7 @@ class DossierReportGenerator:
         <!-- BELIEF SYSTEM -->
         <div class="section">
             <h2>🌍 Worldview & Beliefs</h2>
-            {% if data.beliefs and not data.beliefs.error %}
+            {% if data.beliefs and not data.beliefs.error and not data.beliefs.gated %}
                 <h3>Political Compass</h3>
                 <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin-bottom: 15px; text-align: center; border: 1px solid #e2e8f0;">
                     <div style="font-weight: bold; color: var(--primary);">{{ data.beliefs.get('POLITICAL COMPASS', {}).get('label', 'Unknown Alignment') }}</div>
@@ -393,6 +400,11 @@ class DossierReportGenerator:
                     <div class="bar-container"><div class="bar-fill" style="width: {{ val * 10 }}%; opacity: 0.8;"></div></div>
                 </div>
                 {% endfor %}
+            {% elif data.beliefs.gated %}
+                <p style="color: #94a3b8; font-style: italic;">
+                    Not inferred. Political and religious opinions are sensitive personal data about
+                    someone who has not agreed to being analysed.
+                </p>
             {% else %}
                 <p style="color: #94a3b8; font-style: italic;">Belief system analysis unavailable.</p>
             {% endif %}

@@ -370,6 +370,46 @@ def test_api_get_results(client, app):
     assert data["score"] == 85
 
 
+def test_api_get_results_scrubs_stored_policy_key(client, app):
+    """Reports stored before the copy fix must not keep leaking the config key.
+
+    The reason string was written into result_data at analysis time, so it lives
+    in the row and in any export made from it - not only in the code path.
+    """
+    legacy = {
+        "belief_system": {"gated": True, "status": "not_collected",
+                          "reason": "disabled by policy (privacy.allow_special_category_inference)"},
+        "behavioral_profile": {
+            "temperament": {"label": "Calm"},
+            "relationships": {"gated": True, "status": "not_collected",
+                              "reason": "(privacy.allow_special_category_inference)"},
+        },
+    }
+    with app.app_context():
+        from app.web.models import db
+
+        task = Task(platform="twitter", profile_id="legacy_gate",
+                    status=TaskStatus.COMPLETED, user_id=app.config["TEST_USER_ID"])
+        task.result_data = legacy
+        task.has_result = True
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+
+    response = client.get(f"/api/tasks/{task_id}/results")
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "allow_special_category_inference" not in body
+    data = json.loads(body)
+    assert data["behavioral_profile"]["relationships"]["code"] == "special_category_not_inferred"
+    assert data["belief_system"]["code"] == "special_category_not_inferred"
+    assert data["behavioral_profile"]["temperament"]["label"] == "Calm"
+
+    export = client.get(f"/api/tasks/{task_id}/download?format=json")
+    assert export.status_code == 200
+    assert "allow_special_category_inference" not in export.get_data(as_text=True)
+
+
 def test_api_get_results_not_completed(client, app):
     """Test getting results for non-completed task"""
     with app.app_context():

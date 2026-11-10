@@ -13,7 +13,7 @@ from .platform_prompts import get_platform_context, verify_claim_evidence
 # Specialized Analyzers
 from .belief_analyzer import BeliefSystemAnalyzer
 from .consumer_intelligence import ConsumerIntelligenceAnalyzer
-from .behavioral_analyzer import BehavioralAnalyzer
+from .behavioral_analyzer import BehavioralAnalyzer, gated_notice
 from ..utils.config import allows_special_category_inference
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,6 @@ class IntelligenceAnalyzer:
                 "generated_at": dossier_data.get('collected_at')
             },
             "core_intelligence": {},
-            "belief_system": {},
             "belief_system": {},
             "consumer_profile": {},
             "behavioral_profile": {},
@@ -97,12 +96,7 @@ class IntelligenceAnalyzer:
                 logger.error(f"Belief system failure: {e}")
                 report["belief_system"]["error"] = str(e)
         else:
-            report["belief_system"] = {
-                "gated": True,
-                "status": "not_collected",
-                "reason": "Political, religious and social-belief inference is disabled by policy "
-                          "(privacy.allow_special_category_inference). No inference was run.",
-            }
+            report["belief_system"] = gated_notice()
             
         # 3. CONSUMER INTELLIGENCE (New Module)
         try:

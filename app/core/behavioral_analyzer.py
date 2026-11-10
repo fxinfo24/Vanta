@@ -58,12 +58,22 @@ _GATED_SCHEMA = """    "relationships": {
 """
 
 
-def _gated_notice(section: str) -> Dict[str, Any]:
+# The gate is permanent for third-party subjects: there is no consent to point at,
+# so the inference is never run. The payload carries a machine-readable code and a
+# plain-language reason; internal config keys are not part of the API surface, since
+# anything here is also visible in exports and to any API consumer.
+GATED_CODE = "special_category_not_inferred"
+GATED_REASON = ("Not inferred. This section would describe sensitive personal attributes "
+                "of someone who has not agreed to being analysed.")
+
+
+def gated_notice() -> Dict[str, Any]:
+    """The one shape every policy-gated section uses (behavioral and belief)."""
     return {
         "gated": True,
         "status": "not_collected",
-        "reason": f"'{section}' infers a special-category attribute and is disabled by policy "
-                  f"(privacy.allow_special_category_inference). Nothing was collected, so nothing is shown.",
+        "code": GATED_CODE,
+        "reason": GATED_REASON,
     }
 
 class BehavioralAnalyzer:
@@ -163,11 +173,11 @@ class BehavioralAnalyzer:
             # A model that volunteers a gated attribute anyway does not get to keep it.
             for section in GATED_SECTIONS:
                 result.pop(section, None)
-                result[section] = _gated_notice(section)
+                result[section] = gated_notice()
             result.setdefault("limitations", [])
             if isinstance(result["limitations"], list):
                 result["limitations"].append(
-                    "Special-category sections (intimate relationships, substance use) are "
-                    "disabled by policy and were not inferred."
+                    "Relationships and substance use are not inferred: they describe sensitive "
+                    "personal attributes of someone who has not agreed to being analysed."
                 )
         return result
