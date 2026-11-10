@@ -438,14 +438,20 @@ def run_analysis(task_id: int, platform: str, profile_id: str, app=None, mode: s
             # Run the actual analysis
             result = analyzer.analyze_profile(platform, profile_id, mode=mode)
 
-            # Canonical: persist in DB; file is best-effort fallback for debugging
+            # Canonical: persist in DB; file is best-effort fallback for debugging.
+            # Committed immediately: the snapshot step below rolls back on
+            # failure, and an uncommitted result used to die with that rollback
+            # (a completed task with no result and no error).
             try:
                 task.result_data = json.loads(json.dumps(result, default=str))
                 task.has_result = True
+                db.session.commit()
             except Exception as e:
+                db.session.rollback()
                 logger.error(f"Failed to serialize result_data for task {task_id}: {e}", exc_info=True)
                 task.result_data = None
                 task.has_result = False
+                db.session.commit()
 
             # Optional: also write a file in development environments
             result_path = Path(current_app.config["RESULTS_FOLDER"]) / f"{task_id}.json"
