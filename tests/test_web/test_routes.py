@@ -374,8 +374,11 @@ def test_monitoring_self_test_is_hidden_and_reports_event_id(client, app):
     """The probe exists to prove capture in production, so it must not advertise."""
     monkeypatch = pytest.MonkeyPatch()
 
-    # No token configured: indistinguishable from any other missing route.
+    # No token configured: indistinguishable from any other missing route,
+    # and reachable without a user JWT (a monitor has no account here).
     monkeypatch.delenv("MONITORING_TEST_TOKEN", raising=False)
+    anonymous = app.test_client()
+    assert anonymous.get("/api/health/self-test").status_code == 404
     assert client.get("/api/health/self-test").status_code == 404
 
     # Token configured, wrong header: still hidden.

@@ -32,13 +32,14 @@ api_bp = Blueprint("api", __name__)
 # ---------------------------------------------------------------------------
 # Authentication + per-user scoping
 # ---------------------------------------------------------------------------
-# Every /api route requires a Bearer JWT except /health and /auth/*.
+# Every /api route requires a Bearer JWT except /health, its self-test probe
+# (which carries its own token) and /auth/*.
 # g.current_user is set by the guard; handlers scope all queries to
 # g.current_user.id so one user can never see another's analyses.
 
 _PUBLIC_ENDPOINTS = {
-    "api.health_check", "api.auth_register", "api.auth_login",
-    "api.auth_forgot_password", "api.auth_reset_password",
+    "api.health_check", "api.monitoring_self_test", "api.auth_register",
+    "api.auth_login", "api.auth_forgot_password", "api.auth_reset_password",
 }
 
 
