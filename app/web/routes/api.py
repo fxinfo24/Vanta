@@ -963,12 +963,33 @@ def _subject_freshness(tasks):
     return fresh
 
 
-def _with_history(task, payload):
+def _slim_dossier(payload: dict) -> dict:
+    """Serve the dossier slice the report renders, not the raw collection.
+
+    The stored dossier is ~95% of a results response (506 KB of 529 KB on a real
+    deep run) and the report only reads its social graph, so the full copy was
+    shipped over the network and parsed in the browser for nothing. The full
+    object stays in the database and in the download endpoint.
+    """
+    out = dict(payload)
+    dossier = out.get("raw_dossier")
+    if isinstance(dossier, dict):
+        out["raw_dossier"] = {
+            "social_graph": dossier.get("social_graph") or {},
+            "statistics": dossier.get("statistics") or {},
+        }
+        out["raw_dossier_trimmed"] = True
+    return out
+
+
+def _with_history(task, payload, include_raw: bool = False):
     """Attach this subject's timeline and the change since the previous run."""
     from app.web.models.dossier import DossierSnapshot
 
     if not isinstance(payload, dict):
         return payload
+    if not include_raw:
+        payload = _slim_dossier(payload)
     try:
         rows = _subject_snapshots(task)
     except Exception as e:  # history must never break result delivery
@@ -1049,17 +1070,19 @@ def get_results(task_id):
         msg = "Results only available for completed tasks"
         return jsonify({"error": msg}), 400
 
+    include_raw = str(request.args.get("include_raw", "")).lower() in ("1", "true", "yes")
+
     # Canonical source: DB
     # Canonical source: DB - Only check if attribute exists (compatibility)
     if hasattr(task, 'result_data') and task.result_data is not None:
-        return jsonify(_with_history(task, task.result_data))
+        return jsonify(_with_history(task, task.result_data, include_raw=include_raw))
 
     # Backward-compatible fallback: file
     if task.result_path and Path(task.result_path).exists():
         try:
             with open(task.result_path, "r") as f:
                 results = json.load(f)
-            return jsonify(_with_history(task, results))
+            return jsonify(_with_history(task, results, include_raw=include_raw))
         except Exception as e:
             logger.error(f"Error reading results for task {task_id}: {e}")
 

@@ -33,11 +33,13 @@ const TaskView: React.FC = () => {
 
   useEffect(() => {
     loadTask();
+    // 4s instead of 3s: progress is reported per stage, and a faster poll only
+    // adds load to the single backend worker without showing anything new.
     const interval = setInterval(() => {
       if (task && (task.status === 'pending' || task.status === 'processing')) {
         loadTask();
       }
-    }, 3000);
+    }, 4000);
     return () => clearInterval(interval);
   }, [id, task?.status]);
 

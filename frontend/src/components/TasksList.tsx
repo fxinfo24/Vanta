@@ -32,26 +32,24 @@ const TasksList: React.FC = () => {
   const [filter, setFilter] = useState({ platform: '', status: '' });
   const [showNewAnalysis, setShowNewAnalysis] = useState(false);
 
-  // Polling for updates
+  const hasActiveTasks = tasks.some(t => ['pending', 'processing'].includes(t.status));
+
+  // Load once per filter change.
   useEffect(() => {
-    // Initial load
     loadTasks(true);
+  }, [filter.platform, filter.status]);
 
-    const intervalId = setInterval(() => {
-      // Check if we have active tasks that need monitoring
-      const hasActiveTasks = tasks.some(t => ['pending', 'processing'].includes(t.status));
-
-      // We poll if:
-      // 1. There are active tasks (to see progress/completion)
-      // 2. OR we are on the 'processing' or 'pending' filter (to catch new ones)
-      // 3. OR simply to keep the list fresh (every 2s is fine for local dev/docker)
-      if (hasActiveTasks || filter.status === 'processing' || filter.status === 'pending') {
-        loadTasks(false); // Silent update
-      }
-    }, 2000);
-
+  // Poll only while something is actually moving. A finished list needs no
+  // traffic, and 4s is still responsive for stage-level progress on a
+  // single-worker backend. Previously the interval read a stale `tasks`
+  // snapshot, so it could keep polling a list that had already settled.
+  useEffect(() => {
+    const shouldPoll =
+      hasActiveTasks || filter.status === 'processing' || filter.status === 'pending';
+    if (!shouldPoll) return;
+    const intervalId = setInterval(() => loadTasks(false), 4000);
     return () => clearInterval(intervalId);
-  }, [filter, tasks.length > 0 ? 'monitor' : 'idle']);
+  }, [hasActiveTasks, filter.status]);
 
   // Optimize loadTasks to handle silent updates
   const loadTasks = async (isManual = false) => {

@@ -178,7 +178,19 @@ const Layout: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="pt-28 pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto min-h-screen relative z-0">
-        <Outlet />
+        {/* Routes are code-split; the shell stays mounted while a page chunk
+            loads, so navigation never flashes an empty screen. */}
+        <React.Suspense
+          fallback={
+            <div className="space-y-4 animate-pulse" aria-busy="true">
+              <div className="h-8 w-56 rounded-lg bg-white/5" />
+              <div className="h-40 rounded-2xl bg-white/5" />
+              <div className="h-40 rounded-2xl bg-white/5" />
+            </div>
+          }
+        >
+          <Outlet />
+        </React.Suspense>
       </main>
     </div>
   );

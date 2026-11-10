@@ -64,6 +64,14 @@ class ApiService {
           await new Promise((resolve) => setTimeout(resolve, 2000 * config.__retries));
           return this.api.request(config);
         }
+
+        // A rejected token is a logout, not a data error. Clearing it here (and
+        // telling the app) sends the user to sign-in; a wrong password on the
+        // login form must stay a message on the form, so that route is exempt.
+        if (status === 401 && !/\/auth\/(login|register)/.test(String(config.url || ''))) {
+          localStorage.removeItem('vanta_token');
+          window.dispatchEvent(new Event('vanta:auth-expired'));
+        }
         return Promise.reject(error);
       }
     );

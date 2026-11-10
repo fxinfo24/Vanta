@@ -1,11 +1,15 @@
 // Main App Component for Vanta
 import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, Link } from 'react-router-dom';
-import Dashboard from '@/components/Dashboard';
-import TasksList from '@/components/TasksList';
-import TaskView from '@/components/TaskView';
-import ResultView from '@/components/ResultView';
 import Layout from '@/components/Layout';
+
+// The heavy views pull in the charting library, which is most of the bundle.
+// They are loaded per route so signing in no longer downloads them upfront;
+// Layout is static, so the shell (nav, header) still paints immediately.
+const Dashboard = React.lazy(() => import('@/components/Dashboard'));
+const TasksList = React.lazy(() => import('@/components/TasksList'));
+const TaskView = React.lazy(() => import('@/components/TaskView'));
+const ResultView = React.lazy(() => import('@/components/ResultView'));
 import { apiService } from '@/services/api';
 
 const TOKEN_KEY = 'vanta_token';
@@ -571,6 +575,16 @@ const SettingsView: React.FC = () => {
 
 const App: React.FC = () => {
   const [authed, setAuthed] = useState<boolean>(() => !!localStorage.getItem(TOKEN_KEY));
+
+  // The token can be dropped after mount: it expired, or the server rejected
+  // it. Without this, the gate stayed open and an expired session rendered the
+  // authenticated shell around "Error Loading Task" instead of the sign-in
+  // screen — a dead end that looked like a broken app rather than a logout.
+  useEffect(() => {
+    const onExpired = () => setAuthed(false);
+    window.addEventListener('vanta:auth-expired', onExpired);
+    return () => window.removeEventListener('vanta:auth-expired', onExpired);
+  }, []);
 
   return (
     <Router>
