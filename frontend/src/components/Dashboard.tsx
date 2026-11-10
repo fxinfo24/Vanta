@@ -165,7 +165,7 @@ const Dashboard: React.FC = () => {
             Platform Distribution
           </h3>
           <div className="flex-1 w-full min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height={280}>
               <PieChart>
                 <Pie
                   data={pieData}
