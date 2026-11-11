@@ -62,6 +62,18 @@ Two products consolidated into **one Flask app** (`app/web/app.py:create_app()`)
   in-process thread; all three call the same `run_verification_for_posts`. Inert (thread mode) until the
   three `QSTASH_*` vars are set on Render. Verified live at commit `4e1b4868`: `/api/health` 200 and an
   unsigned POST to `/api/verification/job` → 401 `Invalid or missing Upstash-Signature`; 112 tests pass.
+  **Wired and proven live (Nov 2026).** Instance us-east-1 (free: 1,000 msgs/day, 1 MB messages,
+  parallelism 2, 900 s response timeout) — Render runs in oregon, and QStash free is only us-east-1 /
+  eu-central-1, so us-east-1 is the closer of the two. Keys come from `GET $QSTASH_URL/v2/keys`; the
+  five vars live in `.env` and on Render. **Bug found by the first real delivery:** every QStash call
+  was rejected 401 — the body-digest comparison accepted only *unpadded* base64url, while QStash signs
+  the **padded** form, so the hash never matched even though the JWT verified with the right key. Both
+  sides are now normalised (`_b64_normalize`), and the rejection reason is logged rather than returned.
+  Evidence after the fix (commit `ccc2699a`): a signed QStash delivery for post `facebook_eda8eef7b73d`
+  ran the job endpoint and produced 2 claims + 1 verdict, `unverifiable`, confidence 0.245 == composite
+  0.245 (non-zero, so the Layer 7 write fix holds). Diagnosing this cost several deploys — QStash's
+  `/v2/events` records `responseStatus`, `responseHeaders` and a base64 `responseBody` per attempt, which
+  is the fastest way to see what production answered.
 - **Auth:** `POST /api/auth/register|login` + `GET /api/auth/me`, JWT (Bearer, 24h) guarding **every** `/api` route (only `/api/health` + `/auth/*` public). All tasks/posts/claims/verification are scoped to the authenticated user (404 cross-user — existence never leaks). `POST /api/auth/change-password`. Frontend: Login/Register view + profile dropdown (Settings, Log out) in the header. Password hashing via bcrypt (`PyJWT` + `bcrypt` added to requirements).
 - **Settings:** `GET|PUT /api/settings` — profile fields, `default_mode` (quick/deep, applied when `POST /api/analyze` omits mode), `preferred_model` (validated against the OpenRouter catalog; applied per-request), and **BYOK**: per-provider API keys (OpenRouter, ScrapeCreators, NewsAPI, Google Fact Check, ClaimBuster, Apify) stored **Fernet-encrypted** in `user_settings.byok_keys_enc` (key derived from `BYOK_ENCRYPTION_KEY` or `SECRET_KEY` — rotating the secret makes stored keys undecryptable; users re-enter them). API responses never contain key material (masked `••••xxxx` hints + configured/source only).
 - **BYOK resolution:** per-run ContextVar installed at every entry point (request guard for sync routes; background thread + Celery worker resolve from `Task.user_id`). Clients resolve user key → server env, lazily per request (singletons incl. `OpenRouterClient` refresh auth per call; analyzer collector cache is keyed by a key fingerprint so cached clients can't leak keys between users). Missing keys degrade honestly (no mock data; ClaimBuster stays `unavailable` until a key exists).

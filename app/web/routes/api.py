@@ -1960,9 +1960,10 @@ def verification_job():
     sig_ok, sig_reason = _qstash_signature_ok(
         raw, request.headers.get("Upstash-Signature", ""), destination)
     if not sig_ok:
+        # The reason stays in the log: telling the caller which part failed
+        # would help someone probing the endpoint.
         logger.warning(f"QStash job rejected ({sig_reason}) for {destination}")
-        return (jsonify({"error": "Invalid or missing Upstash-Signature"}), 401,
-                {"X-Vanta-Signature": sig_reason})
+        return jsonify({"error": "Invalid or missing Upstash-Signature"}), 401
     try:
         data = json.loads(raw or b"{}")
     except ValueError:
