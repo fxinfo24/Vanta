@@ -460,22 +460,54 @@ class OpenRouterClient:
             "Expecting ':' delimiter",
         ))
 
+    def _fallback_models(self, model: str) -> List[str]:
+        """Other models to try when `model` answers with an empty message.
+
+        Operators list them in OPENROUTER_FALLBACK_MODELS (comma separated).
+        """
+        configured = [m.strip() for m in
+                      (os.getenv("OPENROUTER_FALLBACK_MODELS") or "").split(",") if m.strip()]
+        return [m for m in configured if m != model]
+
+    def _complete(self, messages: List[Dict[str, str]], model: str,
+                  temperature: float = 0.7, max_tokens: int = 2000) -> str:
+        """A completion, trying another model when the first returns nothing.
+
+        Free providers intermittently answer 200 with an empty message, and a
+        retry against the same model tends to repeat it (measured on
+        nemotron-3-ultra: 200/finish_reason=stop/content=None three times in a
+        row on the same prompt, then content). A different model is the retry
+        that can actually recover, so a flaky upstream costs latency instead of
+        blank sections.
+        """
+        text = self._make_request(messages=messages, model=model,
+                                 temperature=temperature, max_tokens=max_tokens) or ""
+        if text.strip():
+            return text
+        for alt in self._fallback_models(model):
+            try:
+                text = self._make_request(messages=messages, model=alt,
+                                          temperature=temperature, max_tokens=max_tokens) or ""
+            except OpenRouterError as exc:
+                logger.warning(f"Fallback model {alt} failed: {exc}")
+                continue
+            if text.strip():
+                logger.warning(f"Empty completion from {model}; recovered with {alt}")
+                return text
+        return ""
+
     def _request_json(self, messages: List[Dict[str, str]], model: str, temperature: float,
                       max_tokens: int, label: str = "analysis") -> Any:
         """Request a JSON completion with the recovery paths every caller needs.
 
-        Empty completion -> one retry. Truncated JSON -> one re-request at double
-        budget (capped). Anything still unparseable raises JSONDecodeError so the
-        caller reports absence instead of inventing defaults.
+        Empty completion -> another model (see _complete). Truncated JSON -> one
+        re-request at double budget (capped). Anything still unparseable raises
+        JSONDecodeError so the caller reports absence instead of inventing
+        defaults.
         """
-        response = self._make_request(
+        response = self._complete(
             messages=messages, model=model, temperature=temperature, max_tokens=max_tokens
-        ) or ""
-        if not response.strip():
-            logger.warning(f"Empty completion for {label}, retrying once")
-            response = self._make_request(
-                messages=messages, model=model, temperature=temperature, max_tokens=max_tokens
-            ) or ""
+        )
         if not response.strip():
             raise ValueError(f"Empty LLM response for {label} after retry")
 
@@ -509,22 +541,15 @@ class OpenRouterClient:
         model = self.default_models.get(model_type, self.default_models["general"])
         
         try:
-            response = self._make_request(
+            # Nemotron reasoning models burn tokens thinking, so a small budget
+            # truncates long JSON. Empty completions are recovered by
+            # _complete's model fallback, not by asking the same model twice.
+            response = self._complete(
                 messages=messages,
                 model=model,
-                temperature=0.3, # Low temp for structured data
-                max_tokens=max_tokens  # Nemotron reasoning models burn tokens thinking; 3000 truncates long JSON
-            ) or ""
-            # Nemotron occasionally returns an empty completion; one retry
-            # turns a hard parse failure into a clean result on transient empties.
-            if not response.strip():
-                logger.warning(f"Empty completion for model_type={model_type}, retrying once")
-                response = self._make_request(
-                    messages=messages,
-                    model=model,
-                    temperature=0.3,
-                    max_tokens=max_tokens
-                ) or ""
+                temperature=0.3,  # Low temp for structured data
+                max_tokens=max_tokens
+            )
             if not response.strip():
                 raise ValueError(f"Empty LLM response for model_type={model_type} after retry")
             

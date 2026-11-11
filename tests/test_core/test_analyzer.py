@@ -491,6 +491,32 @@ def test_special_category_sections_requested_when_enabled(monkeypatch):
     assert out["relationships"]["attachment_style"] == "Secure"
 
 
+def test_empty_completion_recovers_with_a_configured_fallback_model(monkeypatch):
+    """A flaky free model must not blank a section it could have answered.
+
+    Measured live: nemotron-3-ultra returned 200 with content=None three times
+    for the same prompt, then content - so retrying the same model is not a
+    retry that can help. A different model is.
+    """
+    from app.core.openrouter_client import openrouter_client
+
+    monkeypatch.setenv("OPENROUTER_FALLBACK_MODELS", "alt/model:free,other/model:free")
+    calls = []
+
+    def fake_request(messages, model=None, temperature=0.7, max_tokens=2000):
+        calls.append(model)
+        return '{"ok": true}' if model == "alt/model:free" else ""
+
+    monkeypatch.setattr(openrouter_client, "_make_request", fake_request)
+
+    text = openrouter_client._complete([{"role": "user", "content": "hi"}], "primary/model")
+    assert json.loads(text) == {"ok": True}
+    assert calls == ["primary/model", "alt/model:free"]
+
+    monkeypatch.delenv("OPENROUTER_FALLBACK_MODELS")
+    assert openrouter_client._complete([{"role": "user", "content": "hi"}], "primary/model") == ""
+
+
 def test_private_facebook_profile_is_reported_not_collected():
     """A private profile is a 200 with no body, so the status has to travel.
 
