@@ -462,7 +462,7 @@ class SocialMediaAnalyzer:
                     "display_name": profile_data.get("display_name"),
                     "bio": profile_data.get("bio"),
                     "profile_image_url": profile_data.get("profile_image_url") or profile_data.get("avatar_url"),
-                    "is_verified": profile_data.get("verified", False),
+                    "is_verified": profile_data.get("verified"),
                     "location": profile_data.get("location"),
                     "website": profile_data.get("website")
                 },

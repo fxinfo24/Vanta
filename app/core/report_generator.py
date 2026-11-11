@@ -79,7 +79,7 @@ class DossierReportGenerator:
                 "following": profile.get("following", 0),
                 "posts": profile.get("posts", 0),
                 "profile_image_url": profile.get("profile_image_url", ""),
-                "is_verified": profile.get("is_verified", False)
+                "is_verified": profile.get("is_verified")
             },
             "summary": data.get("executive_summary") or "Executive summary generation failed or data is unavailable.",
             "psych": data.get("content_analysis", {}).get("personality_traits") or data.get("content_analysis", {}).get("psychological_profile", {}),

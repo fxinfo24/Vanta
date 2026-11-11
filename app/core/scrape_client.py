@@ -1730,7 +1730,10 @@ class ScrapeCreatorsClient:
             "follower_count": data.get("followerCount") or data.get("followers") or data.get("follower_count") or data.get("followers_count") or 0,
             "following_count": data.get("following") or data.get("following_count") or 0,
             "posts_count": data.get("posts_count") or data.get("media_count") or data.get("videos_count") or 0,
-            "verified": data.get("verified") or data.get("is_verified") or False,
+            # None = the provider said nothing about the badge. Defaulting to
+            # False would assert "not verified" about accounts we never checked
+            # (e.g. facebook/BarackObama), which the report then flags as risk.
+            "verified": data.get("verified") if data.get("verified") is not None else data.get("is_verified"),
             "profile_image_url": data.get("profilePicLarge") or data.get("profilePicMedium") or data.get("avatar") or data.get("profile_image_url") or data.get("avatar_url"),
             # Facebook-specific (real, from API — no fabrication):
             "like_count": data.get("likeCount"),

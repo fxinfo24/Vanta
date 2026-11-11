@@ -281,6 +281,7 @@ _DATA_GAP_RE = re.compile(
     # describe missing input rather than evidence of a fake profile.
     r"|\bverification\s+gap\b|\bdata\s+collection\s+limitation\b|\bprovider\s+(?:gap|limitation)\b"
     r"|\bnot\s+verified\b|\bno\s+platform\s+(?:authenticity|identity)\b"
+    r"|\bverified\s+(?:flag|badge)\b[^.]{0,40}\b(?:false|absent|missing|unknown)\b"
     r"|\bverification\s+(?:badge|status)\s+(?:absent|missing|not\s+returned)\b",
     re.IGNORECASE,
 )
@@ -360,6 +361,19 @@ def _filter_unsupported_claims(claims: Any, avail: Dict[str, Any], label: str = 
     if dropped:
         logger.info(f"Discarded {len(dropped)} unsupported {label}(s): {sorted(reasons)}")
     return kept, dropped, reasons
+
+
+def _verified_label(profile_data: Dict[str, Any]) -> str:
+    """Render verification without inventing it.
+
+    None means the provider returned no badge field at all. Printing that as
+    "False" makes the model report an impersonation risk on the real account
+    (observed on facebook/BarackObama: the only red flag was our own default).
+    """
+    verified = profile_data.get("verified")
+    if verified is None:
+        return "unknown (provider returned no badge status)"
+    return "yes" if verified else "no"
 
 
 class OpenRouterClient:
@@ -773,7 +787,7 @@ Account Age: {profile_data.get('created_at', 'Unknown')}
 Followers: {_metric('followers_count')}
 Following: {_metric('following_count')}
 Posts: {_metric('posts_count')}
-Verified: {profile_data.get('verified', False)}
+Verified: {_verified_label(profile_data)}
 Bio Length: {len(profile_data.get('bio') or '')} characters
 Profile Image: {'Present' if profile_data.get('profile_image_url') else 'Missing'}
         """.strip()
@@ -797,6 +811,7 @@ Profile Image: {'Present' if profile_data.get('profile_image_url') else 'Missing
                 social media authenticity analysis. Analyze profiles for signs of automation, bot behavior, 
                 purchased followers, and other authenticity issues.
                 CRITICAL: If 'Verified' is True, start with a high base trust score (>0.8) unless you find specific evidence of compromise (hacked verified account).
+                CRITICAL: If 'Verified' is unknown, verification was simply not measured — never turn that into a red flag, a green flag or a risk finding.
                 CRITICAL: Any metric marked 'unknown (not exposed by provider)' is MISSING data, not zero.
                 Never treat an unknown metric as evidence (e.g. do not infer purchased followers from an
                 unknown following count).
@@ -956,7 +971,7 @@ Base predictions on observable patterns and industry benchmarks."""
 @{profile_data.get('username')} - {profile_data.get('display_name')}
 Bio: {profile_data.get('bio', 'No bio')}
 {profile_data.get('followers_count', 0):,} followers on {profile_data.get('platform', 'unknown')}
-Verified: {profile_data.get('verified', False)}
+Verified: {_verified_label(profile_data)}
 
 Make it informative and engaging, highlighting the most interesting aspects."""
             }

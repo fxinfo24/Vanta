@@ -551,6 +551,37 @@ def test_sentiment_survives_without_nltk(analyzer, monkeypatch):
     assert nlp.sentiment_backend() == "lexicon"
 
 
+def test_missing_badge_field_is_unknown_not_false():
+    """No badge in the payload means unmeasured, not "not verified"."""
+    from unittest.mock import Mock
+
+    from app.core.scrape_client import ScrapeCreatorsClient
+
+    client = Mock()
+    without_badge = ScrapeCreatorsClient._normalize_generic_data(
+        client, {"id": "1", "name": "Someone", "followerCount": 10}, "facebook")
+    with_badge = ScrapeCreatorsClient._normalize_generic_data(
+        client, {"id": "1", "name": "Someone", "verified": False}, "facebook")
+
+    assert without_badge["verified"] is None
+    assert with_badge["verified"] is False
+
+
+def test_unknown_verification_is_not_reported_as_unverified():
+    """The scoring path must not add "Account not verified" out of nothing."""
+    from app.core.authenticity import ProfileAuthenticityAnalyzer
+
+    analyzer = ProfileAuthenticityAnalyzer()
+    profile = {"followers_count": 1000, "bio": "hello", "posts_count": 5}
+
+    unknown = analyzer.analyze_authenticity(profile, {"key_insights": ["a"]})
+    refused = analyzer.analyze_authenticity({**profile, "verified": False}, {"key_insights": ["a"]})
+
+    assert "Account not verified" not in unknown["flags"]
+    assert "Account not verified" in refused["flags"]
+    assert unknown["components"]["verification"] is None
+
+
 def test_truncated_json_moves_on_to_the_fallback_model(monkeypatch):
     """A section cut mid-JSON must not cost the section when another model can answer."""
     from app.core.openrouter_client import openrouter_client

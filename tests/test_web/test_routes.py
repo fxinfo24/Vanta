@@ -1401,12 +1401,16 @@ def test_verification_gap_is_a_data_gap_not_a_red_flag():
         # Real phrasing from a live run: the model states it as a finding.
         "Not verified — no platform authenticity badge",
         "Not verified - no platform identity confirmation",
+        # The exact sentence a live deep run produced for facebook/BarackObama.
+        "Verified flag is False in collected data — the page carries a verified "
+        "badge; this discrepancy may indicate a data-collection issue or an "
+        "impersonation account",
         # A live run folded three missing inputs into one "unavailable" line.
         "Following count, total posts, and account age unavailable — limits network-level validation",
         "Account was created recently",
     ])
     assert evidence == ["Account was created recently"]
-    assert len(gaps) == 4
+    assert len(gaps) == 5
 
 
 def test_balance_recorded_with_another_key_does_not_block(app, monkeypatch):

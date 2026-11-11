@@ -3,7 +3,7 @@ Vanta: Profile Authenticity Analyzer
 Evaluates profile authenticity based on various signals
 """
 
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 import re
 from datetime import datetime
 import logging
@@ -290,14 +290,16 @@ class ProfileAuthenticityAnalyzer:
 
         return max(0.0, min(1.0, activity_score))
 
-    def _check_verification(self, profile_data: Dict[str, Any]) -> bool:
+    def _check_verification(self, profile_data: Dict[str, Any]) -> Optional[bool]:
         """
         Check if the account is verified by the platform
 
         Returns:
-            Boolean indicating verification status
+            True/False when the provider stated it, None when it did not say.
+            None must not be reported as "not verified": that is a claim about
+            the account built out of missing input.
         """
-        return profile_data.get("verified", False)
+        return profile_data.get("verified")
 
     def _check_account_age(self, profile_data: Dict[str, Any]) -> float:
         """
@@ -513,7 +515,7 @@ class ProfileAuthenticityAnalyzer:
         overall_score: float,
         consistency_score: float,
         activity_score: float,
-        verification_status: bool,
+        verification_status: Optional[bool],
         account_age_score: float,
         language_score: float,
     ) -> Tuple[str, List[str]]:
@@ -540,7 +542,7 @@ class ProfileAuthenticityAnalyzer:
         if activity_score < 0.5:
             flags.append("Suspicious activity patterns")
 
-        if not verification_status:
+        if verification_status is False:
             flags.append("Account not verified")
 
         if account_age_score < 0.3:
