@@ -450,6 +450,68 @@ def test_api_get_results_scrubs_stored_policy_key(client, app):
     assert "allow_special_category_inference" not in export.get_data(as_text=True)
 
 
+def test_post_from_task_ingests_the_subjects_own_posts(client, app):
+    """Verification must run on what the account published, not on our summary.
+
+    The bridge previously fed the extractor a blob of display name + bio +
+    executive summary, so every "claim" it checked was Vanta's own prose.
+    """
+    result = {
+        "executive_summary": "This account posts about municipal politics.",
+        "profile_info": {"display_name": "City Desk"},
+        "raw_dossier": {"content": [
+            {"text": "The bridge reopened on 3 March 2024 after repairs.",
+             "url": "https://example.test/p/1", "creation_time": 1709467200},
+            {"text": "Turnout reached 62 percent in the district election.",
+             "url": "https://example.test/p/2", "creation_time": "2024-03-05T10:00:00Z"},
+            {"text": "", "url": "https://example.test/p/3"},
+        ]},
+    }
+    with app.app_context():
+        from app.web.models import db
+
+        task = Task(platform="facebook", profile_id="citydesk",
+                    status=TaskStatus.COMPLETED, user_id=app.config["TEST_USER_ID"])
+        task.result_data = result
+        task.has_result = True
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+
+    response = client.post(f"/api/verification/post/from-task/{task_id}")
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["source"] == "subject_posts"
+    assert body["created"] == 2, "blank cards carry no claim and must be skipped"
+    texts = [p["text"] for p in body["posts"]]
+    assert any("bridge reopened on 3 March 2024" in t for t in texts)
+    assert any("Turnout reached 62 percent" in t for t in texts)
+    assert not any("municipal politics" in t for t in texts), \
+        "the analysis summary must not stand in for the subject's words"
+
+
+
+def test_post_from_task_flags_the_summary_fallback(client, app):
+    """A profile-only dossier has no post text; say so instead of pretending."""
+    with app.app_context():
+        from app.web.models import db
+
+        task = Task(platform="facebook", profile_id="bare",
+                    status=TaskStatus.COMPLETED, user_id=app.config["TEST_USER_ID"])
+        task.result_data = {"executive_summary": "Profile with no collected posts.",
+                            "profile_info": {"display_name": "Bare"}}
+        task.has_result = True
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+
+    response = client.post(f"/api/verification/post/from-task/{task_id}")
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["source"] == "dossier_summary"
+    assert "no post text" in body["message"]
+
+
 def test_api_get_results_not_completed(client, app):
     """Test getting results for non-completed task"""
     with app.app_context():

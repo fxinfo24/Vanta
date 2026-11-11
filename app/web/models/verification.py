@@ -190,7 +190,15 @@ class SocialMediaPost(db.Model):
     reaction_sad_count = db.Column(db.Integer, default=0)
     reaction_angry_count = db.Column(db.Integer, default=0)
     reaction_care_count = db.Column(db.Integer, default=0)
-    media_type = db.Column(db.Enum(MediaType), nullable=True)
+    # The `mediatype` enum in the database is labelled with the member *values*
+    # (Photo, Video, GenericAttachmentMedia, text, other). Without
+    # values_callable SQLAlchemy reads and writes member *names*, so loading any
+    # ingested post raised LookupError: 'text' is not among the defined enum
+    # values - every row was unreadable, which is what broke the posts list.
+    media_type = db.Column(
+        db.Enum(MediaType, values_callable=lambda enum: [m.value for m in enum]),
+        nullable=True,
+    )
     media_urls = db.Column(db.JSON)
     media_metadata = db.Column(db.JSON)
     post_url = db.Column(db.String(500))

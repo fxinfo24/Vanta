@@ -5,7 +5,7 @@ Handles API endpoints for tasks and analysis results
 """
 from flask import Blueprint, jsonify, request, current_app, send_file, g, abort
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import hmac
 import json
 import threading
@@ -1512,10 +1512,88 @@ def create_post_from_task(task_id):
     from app.web.models.verification import SocialMediaPost, LanguageCode, MediaType
     import hashlib
     profile_info = result.get("profile_info", {}) if isinstance(result, dict) else {}
+    display = profile_info.get("display_name", "") if isinstance(profile_info, dict) else ""
+
+    # Ingest what the subject actually published. The dossier's `content` list
+    # holds the collected posts (text, url, timestamp); the earlier version of
+    # this bridge skipped it and built a blob out of display name + bio +
+    # executive summary, so every "claim" it verified was Vanta's own prose
+    # about the account rather than anything the account said.
+    from app.core.ingestion.lang_detect import detect_language
+
+    def _post_time(entry):
+        raw = entry.get("creation_time") or entry.get("publishTime") or entry.get("timestamp")
+        if isinstance(raw, (int, float)):
+            return datetime.fromtimestamp(raw / 1000 if raw > 1e11 else raw, tz=timezone.utc).replace(tzinfo=None)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                pass
+        return task.completed_at or datetime.utcnow()
+
+    dossier_content = ((result.get("raw_dossier") or {}).get("content") or []) if isinstance(result, dict) else []
+    subject_posts = []
+    seen = set()
+    for entry in dossier_content:
+        if not isinstance(entry, dict):
+            continue
+        text = (entry.get("text") or entry.get("message") or entry.get("description") or "").strip()
+        if len(text) < 12:
+            continue  # link-only or empty cards carry no claim
+        digest = hashlib.md5(text.encode()).hexdigest()[:10]
+        if digest in seen:
+            continue
+        seen.add(digest)
+        subject_posts.append({"text": text, "digest": digest, "url": entry.get("url") or entry.get("post_url"),
+                              "created": _post_time(entry)})
+
+    # Bound the batch: every post becomes claims and each claim runs four
+    # verification layers, so a 46-post dossier is not a single request's work.
+    max_posts = int(request.args.get("max_posts", 20))
+    subject_posts = subject_posts[:max_posts]
+
+    created, existing_posts = [], []
+    if subject_posts:
+        for item in subject_posts:
+            post_id = f"{task.platform}_{task.profile_id}_{item['digest']}"
+            existing = db.session.query(SocialMediaPost).filter_by(id=post_id).first()
+            if existing:
+                existing_posts.append(_verification_payload(post=existing)["post"])
+                continue
+            lang_code, _conf = detect_language(item["text"])
+            lang = LanguageCode.EN if lang_code == "en" else (LanguageCode.BN if lang_code == "bn" else LanguageCode.UNKNOWN)
+            post = SocialMediaPost(
+                id=post_id,
+                user_id=_uid(),
+                platform=task.platform,
+                profile_id=task.profile_id,
+                text=item["text"][:5000],
+                content=item["text"][:5000],
+                author_id=task.profile_id,
+                author_name=display,
+                detected_language=lang,
+                media_type=MediaType.TEXT,
+                post_url=item["url"],
+                created_at_platform=item["created"],
+                raw_data={"product": "A", "task_id": task_id, "source": "subject_post"},
+            )
+            db.session.add(post)
+            created.append(post)
+        db.session.commit()
+        return jsonify({
+            "message": "Posts created from the subject's own content",
+            "source": "subject_posts",
+            "posts": [_verification_payload(post=p)["post"] for p in created] + existing_posts,
+            "created": len(created),
+            "already_present": len(existing_posts),
+        }), 201
+
+    # Fallback only when the dossier carries no post text at all (e.g. a
+    # profile-only run). Flagged in the response so nobody mistakes the result
+    # for verification of the subject's statements.
     executive = result.get("executive_summary", "") if isinstance(result, dict) else ""
     bio = profile_info.get("bio", "") if isinstance(profile_info, dict) else ""
-    display = profile_info.get("display_name", "") if isinstance(profile_info, dict) else ""
-    # Synthesise a verifiable text blob from the dossier (keeps both products linked)
     text_parts = []
     if display:
         text_parts.append(f"{display} is a creator on {task.platform}.")
@@ -1523,17 +1601,12 @@ def create_post_from_task(task_id):
         text_parts.append(bio)
     if executive:
         text_parts.append(str(executive)[:800])
-    # Content analysis claims add numbers/dates that the extractor can use
-    content_analysis = result.get("content_analysis", {}) if isinstance(result, dict) else {}
-    if isinstance(content_analysis, dict):
-        for k, v in list(content_analysis.items())[:5]:
-            if isinstance(v, str) and len(v) > 20:
-                text_parts.append(f"{k}: {v[:300]}")
     text = " ".join(text_parts).strip() or f"Profile {task.profile_id} on {task.platform}."
     post_id = f"{task.platform}_{task.profile_id}_{hashlib.md5(text.encode()).hexdigest()[:10]}"
     existing = db.session.query(SocialMediaPost).filter_by(id=post_id).first()
     if existing:
-        return jsonify({"message": "Post already exists", **_verification_payload(post=existing)}), 200
+        return jsonify({"message": "Post already exists", "source": "dossier_summary",
+                        **_verification_payload(post=existing)}), 200
     post = SocialMediaPost(
         id=post_id,
         user_id=_uid(),
@@ -1546,11 +1619,12 @@ def create_post_from_task(task_id):
         detected_language=LanguageCode.EN,
         media_type=MediaType.TEXT,
         created_at_platform=task.completed_at or datetime.utcnow(),
-        raw_data={"product": "A", "task_id": task_id, "result_keys": list(result.keys()) if isinstance(result, dict) else []},
+        raw_data={"product": "A", "task_id": task_id, "source": "dossier_summary"},
     )
     db.session.add(post)
     db.session.commit()
-    return jsonify({"message": "Post created from task", **_verification_payload(post=post)}), 201
+    return jsonify({"message": "Task carried no post text; used the analysis summary instead",
+                    "source": "dossier_summary", **_verification_payload(post=post)}), 201
 
 
 @api_bp.route("/verification/posts", methods=["GET"])
@@ -1698,16 +1772,41 @@ def verify_task(task_id):
         resp, code = create_resp
         if code >= 400:
             return resp
-        # parse post id
+        # parse post ids
         payload = resp.get_json()
     else:
         payload = create_resp.get_json()
-    post_id = payload.get("post", {}).get("id")
-    # run pipeline scoped to this post
-    return run_verification_pipeline_scoped(post_id)
+
+    # A task now yields one post per collected item, so verification has to walk
+    # all of them. Claims are the expensive unit (four layers each), so the work
+    # is capped and the remainder is reported rather than silently dropped.
+    post_ids = [p["id"] for p in (payload.get("posts") or []) if p.get("id")]
+    single = (payload.get("post") or {}).get("id")
+    if single and single not in post_ids:
+        post_ids.append(single)
+    if not post_ids:
+        return jsonify({"error": "Task produced no post to verify"}), 400
+
+    max_claims = int(request.args.get("max_claims", 20))
+    remaining, summaries, processed = max_claims, [], 0
+    for pid in post_ids:
+        if remaining <= 0:
+            break
+        part = run_verification_pipeline_scoped(pid, max_claims=remaining).get_json()
+        summaries.extend(part.get("summaries", []))
+        processed += int(part.get("claims") or 0)
+        remaining -= int(part.get("claims") or 0)
+    return jsonify({
+        "message": "Task verification complete",
+        "source": payload.get("source"),
+        "posts": len(post_ids),
+        "claims_processed": processed,
+        "max_claims": max_claims,
+        "summaries": summaries,
+    }), 200
 
 
-def run_verification_pipeline_scoped(post_id=None):
+def run_verification_pipeline_scoped(post_id=None, max_claims=None):
     from app.core.claim_extraction.extractor import ClaimExtractor
     from app.web.models.verification import SocialMediaPost, Claim
     extractor = ClaimExtractor()
@@ -1715,6 +1814,8 @@ def run_verification_pipeline_scoped(post_id=None):
     if not post:
         return jsonify({"error": "Post not found"}), 404
     claims = extractor.extract_claims_from_post(post)
+    if max_claims is not None:
+        claims = claims[:max(0, int(max_claims))]
     summaries = []
     for claim in claims:
         summaries.append(_run_claim_pipeline(claim))
