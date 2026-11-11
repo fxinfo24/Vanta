@@ -1907,27 +1907,35 @@ def _qstash_publish(token, destination, payloads):
 
 
 def _qstash_signature_ok(raw_body, signature, destination):
-    """Verify Upstash-Signature: an HS256 JWT binding the body hash to the URL."""
+    """Verify Upstash-Signature: an HS256 JWT binding the body hash to the URL.
+
+    Returns (ok, reason) so a rejection can be logged; the reason is a short
+    code, never key material.
+    """
     import jwt
     _, keys = _qstash_config()
-    if not signature or not keys:
-        return False
+    if not keys:
+        return False, "not-configured"
+    if not signature:
+        return False, "missing"
     digest = hashlib.sha256(raw_body).digest()
     expected = {base64.urlsafe_b64encode(digest).rstrip(b"=").decode(),
                 base64.b64encode(digest).decode()}
+    decoded = False
     for key in keys:
         try:
             claims = jwt.decode(signature, key, algorithms=["HS256"],
                                 options={"verify_aud": False}, leeway=5)
         except jwt.InvalidTokenError:
             continue
+        decoded = True
         if str(claims.get("body") or "") not in expected:
             continue
         sub = str(claims.get("sub") or "").rstrip("/")
         if sub and destination and sub != destination.rstrip("/"):
             continue
-        return True
-    return False
+        return True, "ok"
+    return False, ("body" if decoded else "decode")
 
 
 @api_bp.route("/verification/job", methods=["POST"])
@@ -1941,8 +1949,12 @@ def verification_job():
     """
     raw = request.get_data() or b""
     destination = _public_base_url() + "/api/verification/job"
-    if not _qstash_signature_ok(raw, request.headers.get("Upstash-Signature", ""), destination):
-        return jsonify({"error": "Invalid or missing Upstash-Signature"}), 401
+    sig_ok, sig_reason = _qstash_signature_ok(
+        raw, request.headers.get("Upstash-Signature", ""), destination)
+    if not sig_ok:
+        logger.warning(f"QStash job rejected ({sig_reason}) for {destination}")
+        return (jsonify({"error": "Invalid or missing Upstash-Signature"}), 401,
+                {"X-Vanta-Signature": sig_reason})
     try:
         data = json.loads(raw or b"{}")
     except ValueError:

@@ -627,12 +627,13 @@ def test_qstash_signature_binds_the_body_and_the_destination(app, monkeypatch):
     dest = "https://api.example.com/api/verification/job"
     sig = _qstash_sign(body, dest)
 
-    assert _qstash_signature_ok(body, sig, dest)
-    assert not _qstash_signature_ok(body + b" ", sig, dest), "a tampered body must fail"
-    assert not _qstash_signature_ok(body, sig, "https://evil.example.com/api/verification/job"), \
+    assert _qstash_signature_ok(body, sig, dest)[0]
+    assert not _qstash_signature_ok(body + b" ", sig, dest)[0], "a tampered body must fail"
+    assert _qstash_signature_ok(body + b" ", sig, dest)[1] == "body"
+    assert not _qstash_signature_ok(body, sig, "https://evil.example.com/api/verification/job")[0], \
         "a signature for another destination must fail"
-    assert not _qstash_signature_ok(body, _qstash_sign(body, dest, "wrong_key"), dest)
-    assert not _qstash_signature_ok(body, "", dest)
+    assert not _qstash_signature_ok(body, _qstash_sign(body, dest, "wrong_key"), dest)[0]
+    assert _qstash_signature_ok(body, "", dest) == (False, "missing")
 
 
 def test_verification_job_refuses_unsigned_callers(client, monkeypatch):
