@@ -1906,6 +1906,16 @@ def _qstash_publish(token, destination, payloads):
     return published, errors
 
 
+def _b64_normalize(value):
+    """One form for base64 digests: no padding, url-safe alphabet.
+
+    QStash sends the body digest padded base64url; producing the comparison
+    value any other way (standard alphabet, no padding) would reject a valid
+    signature, so normalise both sides rather than enumerate variants.
+    """
+    return str(value or "").strip().replace("+", "-").replace("/", "_").rstrip("=")
+
+
 def _qstash_signature_ok(raw_body, signature, destination):
     """Verify Upstash-Signature: an HS256 JWT binding the body hash to the URL.
 
@@ -1918,9 +1928,7 @@ def _qstash_signature_ok(raw_body, signature, destination):
         return False, "not-configured"
     if not signature:
         return False, "missing"
-    digest = hashlib.sha256(raw_body).digest()
-    expected = {base64.urlsafe_b64encode(digest).rstrip(b"=").decode(),
-                base64.b64encode(digest).decode()}
+    expected = _b64_normalize(base64.urlsafe_b64encode(hashlib.sha256(raw_body).digest()).decode())
     decoded = False
     for key in keys:
         try:
@@ -1929,7 +1937,7 @@ def _qstash_signature_ok(raw_body, signature, destination):
         except jwt.InvalidTokenError:
             continue
         decoded = True
-        if str(claims.get("body") or "") not in expected:
+        if _b64_normalize(claims.get("body")) != expected:
             continue
         sub = str(claims.get("sub") or "").rstrip("/")
         if sub and destination and sub != destination.rstrip("/"):

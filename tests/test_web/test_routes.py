@@ -605,14 +605,16 @@ def test_verify_task_queues_the_work_instead_of_blocking(client, app, monkeypatc
     assert len(calls[0][0]) == 2
 
 
-def _qstash_sign(body: bytes, destination: str, key: str = "sig_test_key") -> str:
+def _qstash_sign(body: bytes, destination: str, key: str = "sig_test_key",
+                 body_claim=None) -> str:
     """Mimic QStash's Upstash-Signature: HS256 JWT over body hash + destination."""
     import base64
     import hashlib
     import time as _time
     import jwt
     digest = base64.urlsafe_b64encode(hashlib.sha256(body).digest()).rstrip(b"=").decode()
-    return jwt.encode({"iss": "Upstash", "sub": destination, "body": digest,
+    return jwt.encode({"iss": "Upstash", "sub": destination,
+                       "body": body_claim or digest,
                        "exp": int(_time.time()) + 300}, key, algorithm="HS256")
 
 
@@ -634,6 +636,14 @@ def test_qstash_signature_binds_the_body_and_the_destination(app, monkeypatch):
         "a signature for another destination must fail"
     assert not _qstash_signature_ok(body, _qstash_sign(body, dest, "wrong_key"), dest)[0]
     assert _qstash_signature_ok(body, "", dest) == (False, "missing")
+
+    # QStash sends padded base64url; padded standard base64 must verify too.
+    import base64, hashlib
+    digest = hashlib.sha256(body).digest()
+    padded_url = base64.urlsafe_b64encode(digest).decode()
+    std_padded = base64.b64encode(digest).decode()
+    assert _qstash_signature_ok(body, _qstash_sign(body, dest, body_claim=padded_url), dest)[0]
+    assert _qstash_signature_ok(body, _qstash_sign(body, dest, body_claim=std_padded), dest)[0]
 
 
 def test_verification_job_refuses_unsigned_callers(client, monkeypatch):
