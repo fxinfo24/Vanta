@@ -504,14 +504,18 @@ def test_empty_completion_recovers_with_a_configured_fallback_model(monkeypatch)
     calls = []
 
     def fake_request(messages, model=None, temperature=0.7, max_tokens=2000):
-        calls.append(model)
+        calls.append((model, max_tokens))
         return '{"ok": true}' if model == "alt/model:free" else ""
 
     monkeypatch.setattr(openrouter_client, "_make_request", fake_request)
 
-    text = openrouter_client._complete([{"role": "user", "content": "hi"}], "primary/model")
+    text = openrouter_client._complete([{"role": "user", "content": "hi"}], "primary/model",
+                                       max_tokens=3000)
     assert json.loads(text) == {"ok": True}
-    assert calls == ["primary/model", "alt/model:free"]
+    # Same model once at the requested budget, once with room for reasoning
+    # tokens, then a different model - a blank answer after all three is absence.
+    assert [m for m, _ in calls] == ["primary/model", "primary/model", "alt/model:free"]
+    assert calls[1][1] == 6000 and calls[2][1] == 6000
 
     monkeypatch.delenv("OPENROUTER_FALLBACK_MODELS")
     assert openrouter_client._complete([{"role": "user", "content": "hi"}], "primary/model") == ""
