@@ -5,6 +5,7 @@ Universal Large Language Model integration using OpenRouter API
 
 import os
 import re
+import time
 import requests
 import json
 from typing import Dict, Any, List, Optional
@@ -550,9 +551,22 @@ class OpenRouterClient:
         if max_tokens < 12000:
             budgets.append(min(max_tokens * 2, 12000))
 
+        # Every attempt can burn its full HTTP timeout, and the candidate list
+        # is models x budgets. Without a wall clock a single section stretched a
+        # live run's "writing the report" step to 38+ minutes with no progress
+        # (task 35), so attempts stop once the section budget is spent. One
+        # attempt is always allowed, so a slow provider still gets its chance.
+        deadline = time.monotonic() + float(os.getenv("OPENROUTER_SECTION_SECONDS", "180"))
+        attempts = 0
+        skipped = 0
+
         last_truncation: Optional[json.JSONDecodeError] = None
         for candidate in [model] + self._fallback_models(model):
             for budget in budgets:
+                if attempts and (skipped or time.monotonic() >= deadline):
+                    skipped += 1
+                    continue
+                attempts += 1
                 text = self._one(messages, candidate, temperature, budget)
                 if not text.strip():
                     continue
@@ -568,6 +582,8 @@ class OpenRouterClient:
                     logger.warning(f"{label}: recovered with {candidate} at {budget} tokens")
                 return parsed
 
+        if skipped:
+            logger.warning(f"{label}: stopped after the section budget with {skipped} attempt(s) unspent")
         if last_truncation is not None:
             raise last_truncation
         raise ValueError(f"Empty LLM response for {label} after retry")

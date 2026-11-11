@@ -582,6 +582,27 @@ def test_unknown_verification_is_not_reported_as_unverified():
     assert unknown["components"]["verification"] is None
 
 
+def test_section_stops_starting_attempts_when_its_time_is_spent(monkeypatch):
+    """A slow provider must not stretch one section to tens of minutes."""
+    from app.core.openrouter_client import openrouter_client
+
+    monkeypatch.setenv("OPENROUTER_FALLBACK_MODELS", "alt/model:free")
+    monkeypatch.setenv("OPENROUTER_SECTION_SECONDS", "0")
+    calls = []
+
+    def fake_request(messages, model=None, temperature=0.7, max_tokens=2000):
+        calls.append((model, max_tokens))
+        return '{"a": 1'   # truncated, so the loop would normally continue
+
+    monkeypatch.setattr(openrouter_client, "_make_request", fake_request)
+    with pytest.raises(json.JSONDecodeError):
+        openrouter_client._request_json(
+            [{"role": "user", "content": "hi"}], "primary/model", 0.3, 3000, label="t")
+
+    # One attempt is always allowed; the rest are abandoned, not queued up.
+    assert calls == [("primary/model", 3000)]
+
+
 def test_truncated_json_moves_on_to_the_fallback_model(monkeypatch):
     """A section cut mid-JSON must not cost the section when another model can answer."""
     from app.core.openrouter_client import openrouter_client
