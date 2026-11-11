@@ -25,9 +25,13 @@ Two products consolidated into **one Flask app** (`app/web/app.py:create_app()`)
   4 comments, belief analysis with evidence calibration. Stored in `Task.result_data` (DB canonical).
 - OpenRouter: default `nvidia/nemotron-3-ultra-550b-a55b:free` (override via `OPENROUTER_MODEL`).
   `load_dotenv(override=True)` — a stale shell env var previously shadowed `.env` (root cause of 401s).
-- Apify: token valid (`hermes_blazer`). Facebook actor `apify/facebook-posts-scraper` (verified 200;
-  old `apify/facebook-scraper` 404s — do not use). **Blocked:** free usage exhausted ($0.004 left),
-  fallback code is wired but runs need a paid plan (console.apify.com/billing).
+- Apify: **unblocked** (Nov 2026). Account rotated to `lovely_kagu` (FREE plan, $5/month usage credit,
+  none of it spent this cycle; old `hermes_blazer` account was down to $0.004). Token rotated in `.env`
+  and on Render (env PUT + redeploy `dep-dbq3d1gn74is739js0e0`, commit `2ce3f867`); live
+  `GET /api/apify/health` → `configured: true, valid: true, user: lovely_kagu`. Facebook actor
+  `apify/facebook-posts-scraper` (verified 200 earlier; old `apify/facebook-scraper` 404s — do not use).
+  Still unverified: an actual fallback profile run on the new account (costs credit, ~$5/month ceiling
+  is the hard limit — `maxMonthlyUsageUsd: 5`).
 - ScrapeCreators: key in `.env`; balance visible only via dashboard / `credits_remaining` in responses
   (no credits API endpoint). New key: ~99 credits at last check.
 - Tests: `pytest` **97 passed / 0 failed** (Nov 2026). The 4 former failures were fixed at root cause: `preprocess_text` now honours its contract (strips URLs + `,.!?`); `analyze_writing_style` vocabulary diversity is uni+bigram TTR and complexity no longer saturates at 1.0; `test_analyze_profile` / `test_full_analysis_flow` were stale (patched legacy `DataCollector` while the analyzer uses `DeepDossierCollector`, causing real API calls that burned ScrapeCreators credits) — they now mock `create_deep_collector` + the intelligence engine, so tests are hermetic. A syntax corruption introduced mid-edit (`}def`) was caught by the same tests and repaired.

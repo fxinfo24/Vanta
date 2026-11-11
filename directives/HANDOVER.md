@@ -112,7 +112,7 @@ Once running:
 All API keys are in `.env` file. The Docker containers automatically load these.
 - `OPENROUTER_API_KEY`: Required for LLM analysis.
 - `SCRAPECREATORS_API_KEY`: Required for real data (system mocks if missing). Balance is dashboard-only (no credits API).
-- `APIFY_API_TOKEN`: Optional fallback scraper (Facebook). Free-tier usage is currently exhausted — raise the limit at console.apify.com/billing to activate the fallback.
+- `APIFY_API_TOKEN`: Optional fallback scraper (Facebook). Active on a FREE-plan account (`lovely_kagu`) with a $5/month usage ceiling; raise it at console.apify.com/billing if the fallback starts returning 402.
 
 ---
 

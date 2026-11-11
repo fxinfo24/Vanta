@@ -46,7 +46,9 @@ Used automatically when ScrapeCreators credits exhaust (Facebook). Actor: `apify
 ```
 APIFY_API_TOKEN=your_apify_token_here
 ```
-Note: Apify free-tier usage may be too small for actor runs — raise the limit at https://console.apify.com/billing if the fallback returns 402.
+Note: the free plan includes $5 of usage per monthly cycle (hard cap, `maxMonthlyUsageUsd`), which covers
+roughly a few dozen Facebook profile runs — raise the limit at https://console.apify.com/billing if the
+fallback returns 402. Check what is left with `GET https://api.apify.com/v2/users/me/usage/monthly`.
 
 #### Legacy Individual APIs (Optional)
 For direct API access (not recommended - use ScrapeCreators instead):

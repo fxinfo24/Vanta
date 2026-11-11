@@ -219,7 +219,7 @@ cd frontend && npm run dev
 | `CORS_ORIGINS` | Yes | Comma-separated frontend URLs |
 | `OPENROUTER_API_KEY` | Yes | OpenRouter API for LLM analysis (Nemotron default) |
 | `SCRAPECREATORS_API_KEY` | Yes | ScrapeCreators API for social data |
-| `APIFY_API_TOKEN` | No | Apify fallback scraper (Facebook); free-tier usage currently exhausted |
+| `APIFY_API_TOKEN` | No | Apify fallback scraper (Facebook); free tier = $5/month usage credit |
 | `DATABASE_URI` | No | PostgreSQL URL (defaults to SQLite) |
 | `REDIS_URL` | No | For Celery background tasks |
 | `FORCE_CELERY` | No | Set to "true" to use Celery over threading |
