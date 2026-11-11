@@ -365,6 +365,18 @@ class DeepDossierCollector:
             if profile_method:
                 result['profile'] = profile_method(username)
                 logger.info(f"Profile collected for {username}")
+                unavailable = self._unavailable_reason(result['profile'])
+                if unavailable:
+                    # Nothing public exists, so there is nothing to scan; asking
+                    # the content endpoint would only buy the same empty answer.
+                    result['unavailable'] = unavailable
+                    result['errors'].append(unavailable['message'])
+                    logger.warning(
+                        f"{platform}/{username}: {unavailable['message']} - no content collected"
+                    )
+                    result['collection_time_seconds'] = round(
+                        time.time() - self.collection_start_time, 2)
+                    return result
         except Exception as e:
             # Same credits-exhausted fallback the deep path uses, so a quick run
             # does not come back empty while a working provider is configured.
@@ -397,6 +409,28 @@ class DeepDossierCollector:
         
         return result
     
+    _UNAVAILABLE_STATES = {"private", "suspended", "unavailable", "deleted", "not_found"}
+
+    @classmethod
+    def _unavailable_reason(cls, profile: Any) -> Optional[Dict[str, str]]:
+        """Turn the provider's access status into an explicit collection outcome.
+
+        An inaccessible profile is answered with HTTP 200, zero credits and no
+        content, so nothing raises and the result looks like an account that
+        simply has no posts. Carrying the provider's status forward is the only
+        way for the analyzer to tell those two situations apart.
+        """
+        if not isinstance(profile, dict):
+            return None
+        state = str(profile.get("availability") or "").lower()
+        if state not in cls._UNAVAILABLE_STATES:
+            return None
+        detail = str(profile.get("availability_message") or "").strip()
+        message = f"the provider reports this profile as {state.replace('_', ' ')}"
+        if detail:
+            message += f" ({detail})"
+        return {"reason": state, "message": message}
+
     @staticmethod
     def _stage(on_stage, name: str, note: str, done: int = None, total: int = None) -> None:
         """Tell a caller what just happened, never how long anything should take.
@@ -480,6 +514,18 @@ class DeepDossierCollector:
                 result['profile'] = profile_method(username)
                 api_calls += 1
                 logger.info(f"Profile collected for {username}")
+                unavailable = self._unavailable_reason(result['profile'])
+                if unavailable:
+                    # Every feed would answer with the same empty private
+                    # payload, so stop here instead of spending calls to learn
+                    # nothing, and keep the reason for the caller.
+                    result['unavailable'] = unavailable
+                    result['errors'].append(unavailable['message'])
+                    logger.warning(
+                        f"{platform}/{username}: {unavailable['message']} - skipping feeds, "
+                        f"comments and transcripts"
+                    )
+                    return self._finalize_dossier(result, api_calls)
         except Exception as e:
             # Facebook + ScrapeCreators credits exhausted -> Apify fallback
             # (skips Smart Resolution, which would also burn ScrapeCreators credits)

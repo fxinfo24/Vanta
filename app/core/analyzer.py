@@ -36,6 +36,15 @@ def _shared_cache_app():
     return _CACHE_APP
 
 
+class CollectionEmptyError(RuntimeError):
+    """Collection produced no subject to analyse.
+
+    Raised instead of proceeding, because a report generated from an empty
+    dossier is not a weak report: it is a report about nobody, whose empty
+    sections and failed summary read like findings about the account.
+    """
+
+
 class SocialMediaAnalyzer:
     """Main application for social media profile analysis"""
 
@@ -158,6 +167,42 @@ class SocialMediaAnalyzer:
         except Exception as exc:
             # A cache write must never fail a run that already collected data.
             self.logger.warning(f"Dossier cache write failed: {exc}")
+
+    # A profile dict carrying any of these describes a real subject; none of
+    # them and no posts means the run has nothing to describe at all.
+    _SUBJECT_FIELDS = ("username", "display_name", "follower_count", "posts_count",
+                       "like_count", "profile_image_url")
+
+    @classmethod
+    def _require_something_to_analyse(cls, platform: str, profile_id: str,
+                                      dossier_data: Dict[str, Any]) -> None:
+        """Refuse to report on a dossier that carries no subject.
+
+        Empty sections plus a failed executive summary are not a neutral
+        result: they read as findings about an account. A private profile, a
+        deleted one and a provider outage all arrive this way, so the run ends
+        with the reason it collected instead of a report about nobody.
+        """
+        dossier_data = dossier_data or {}
+        profile = dossier_data.get("profile") or {}
+        has_subject = isinstance(profile, dict) and any(
+            profile.get(field) for field in cls._SUBJECT_FIELDS
+        )
+        if has_subject or dossier_data.get("content"):
+            return
+
+        unavailable = dossier_data.get("unavailable") or {}
+        errors = [str(err).strip() for err in (dossier_data.get("errors") or [])
+                  if str(err).strip()]
+        if unavailable.get("message"):
+            reason = f"{platform}/{profile_id} cannot be analysed: {unavailable['message']}"
+        elif errors:
+            reason = f"{platform}/{profile_id} collection failed: {errors[0]}"
+        else:
+            reason = f"{platform}/{profile_id} returned no profile data and no posts"
+        raise CollectionEmptyError(
+            reason + ". No report was generated and nothing was filled in to replace it."
+        )
 
     @staticmethod
     def _build_coverage(results: Dict[str, Any], dossier: Dict[str, Any]) -> Dict[str, Any]:
@@ -334,6 +379,11 @@ class SocialMediaAnalyzer:
             # ═══════════════════════════════════════════════════════════════
             self.logger.info(f"Dossier Data Keys: {list(dossier_data.keys())}")
             self.logger.info(f"Profile Data collected: {dossier_data.get('profile', {})}")
+
+            # A private/deleted profile and a provider outage both arrive as an
+            # empty dossier. Neither is a subject with nothing to say, so the
+            # run ends with the real reason instead of an analysis of nothing.
+            self._require_something_to_analyse(platform, profile_id, dossier_data)
 
             # ═══════════════════════════════════════════════════════════════
             # PHASE 3: MASTER INTELLIGENCE ANALYSIS

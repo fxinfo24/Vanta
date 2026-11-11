@@ -491,6 +491,85 @@ def test_special_category_sections_requested_when_enabled(monkeypatch):
     assert out["relationships"]["attachment_style"] == "Secure"
 
 
+def test_private_facebook_profile_is_reported_not_collected():
+    """A private profile is a 200 with no body, so the status has to travel.
+
+    ScrapeCreators answers an inaccessible profile with `success: true`,
+    `isPrivate: true` and zero credits. Nothing raises, every feed returns the
+    same empty payload, and the run used to finish with an analysis of nothing.
+    """
+    from unittest.mock import Mock
+
+    from app.core.scrape_client import ScrapeCreatorsClient
+    from app.core.deep_collector import DeepDossierCollector
+    from app.core.analyzer import SocialMediaAnalyzer, CollectionEmptyError
+
+    raw = {"success": True, "credits_charged": 0, "isPrivate": True,
+           "account_status": "private", "message": "Profile is private",
+           "url": "https://www.facebook.com/someone"}
+
+    client = Mock()
+    client.get_facebook_profile.side_effect = lambda username: \
+        ScrapeCreatorsClient._normalize_generic_data(client, raw, "facebook")
+
+    collector = DeepDossierCollector(client=client)
+    dossier = collector.deep_dossier("facebook", "someone")
+
+    assert dossier["unavailable"]["reason"] == "private"
+    assert "Profile is private" in dossier["unavailable"]["message"]
+    assert dossier["content"] == []
+    # Feeds cannot answer for a private profile; asking only spends calls.
+    client.get_facebook_posts.assert_not_called()
+
+    quick = collector.quick_scan("facebook", "someone")
+    assert quick["unavailable"]["reason"] == "private"
+
+    with pytest.raises(CollectionEmptyError) as excinfo:
+        SocialMediaAnalyzer._require_something_to_analyse("facebook", "someone", dossier)
+    assert "private" in str(excinfo.value)
+
+
+def test_analyzer_refuses_to_report_on_an_empty_dossier(analyzer, monkeypatch):
+    """No model pass may run on a dossier with no subject.
+
+    The old behaviour produced a COMPLETED task whose summary said generation
+    failed and whose every section was 'not measured' - indistinguishable from
+    findings about the account.
+    """
+    from app.core.analyzer import CollectionEmptyError
+
+    class FakeCollector:
+        def deep_dossier(self, platform, username, on_stage=None, **kwargs):
+            return {
+                "profile": None,
+                "content": [],
+                "errors": ["the provider reports this profile as private (Profile is private)"],
+                "unavailable": {"reason": "private",
+                                "message": "the provider reports this profile as private "
+                                           "(Profile is private)"},
+                "statistics": {},
+            }
+
+    ran = {"model": False}
+
+    class FakeIntel:
+        def generate_full_report(self, dossier):
+            ran["model"] = True
+            return {}
+
+    monkeypatch.setattr("app.core.deep_collector.create_deep_collector",
+                        lambda *a, **k: FakeCollector())
+    monkeypatch.setattr("app.core.intelligence_analyzer.create_intelligence_analyzer",
+                        lambda *a, **k: FakeIntel())
+
+    with pytest.raises(CollectionEmptyError) as excinfo:
+        analyzer.analyze_profile("facebook", "someone")
+
+    assert "private" in str(excinfo.value)
+    assert "No report was generated" in str(excinfo.value)
+    assert ran["model"] is False, "an empty dossier must not reach the model"
+
+
 def test_quick_scan_posts_are_readable_by_every_analyzer():
     """A quick scan must publish its posts under `content`.
 

@@ -1713,7 +1713,15 @@ class ScrapeCreatorsClient:
         """Generic normalizer for platforms without custom normalization.
         Facebook raw fields (verified live): followerCount/likeCount/
         talkingAboutCount (camelCase), pageIntro (bio), category,
-        profilePicLarge/Medium (URL strings), id (numeric FB id)."""
+        profilePicLarge/Medium (URL strings), id (numeric FB id).
+
+        An inaccessible profile comes back as HTTP 200 with an empty body plus
+        the provider's own `account_status`/`isPrivate` flags, so those are
+        carried forward: without them a private account and an account with no
+        posts look identical downstream."""
+        availability = str(data.get("account_status") or "").lower()
+        if data.get("isPrivate") or data.get("is_private"):
+            availability = "private"
         return {
             "user_id": data.get("id") or data.get("user_id") or data.get("handle"),
             "username": data.get("username") or data.get("handle") or data.get("id"),
@@ -1730,6 +1738,9 @@ class ScrapeCreatorsClient:
             "category": data.get("category"),
             "gender": data.get("gender"),
             "profile_url": data.get("url"),
+            # Access state, not content: 'private' means nothing public exists.
+            "availability": availability or None,
+            "availability_message": data.get("message"),
             "metadata": {
                 "platform": platform,
                 "is_real_data": True

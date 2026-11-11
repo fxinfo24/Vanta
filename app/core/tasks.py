@@ -223,7 +223,9 @@ def run_task_analysis(self, task_id: int) -> Dict[str, Any]:
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error = str(e)
-            task.message = "Failed"
+            # The reason belongs where the user looks: "Failed" alone hid that a
+            # private profile was the cause and not a broken run.
+            task.message = (str(e)[:240] or "Failed")
             task.completed_at = datetime.utcnow()
             task.duration = time.time() - start
             db.session.commit()
