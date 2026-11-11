@@ -82,6 +82,19 @@ Two products consolidated into **one Flask app** (`app/web/app.py:create_app()`)
   says `Profile not found` for the same URL). The collector treats that 200 as a successful empty
   collection, so the task reports COMPLETED instead of telling the user the profile is private. Needs a
   first-class "unavailable/private" outcome; not fixed yet.
+- **Whole-task verification through QStash, no worker process (Nov 2026, fixed).** `POST
+  /api/verification/task/<id>/run` on task 26 published **20 messages, one per collected post**
+  (`mode: qstash`, no Celery/Redis involved: the only Render service is `vanta-api` (`web_service`),
+  and `REDIS_URL`/`FORCE_CELERY` are not in its env). First attempt fired all 20 at once and the free
+  instance (512 MB, `--workers 1 --threads 4`) was recycled twice mid-run — gunicorn `Handling signal:
+  term` at 11:56:44 and 12:00:14 with no deploy in the Render event list — producing **28 × 502** and
+  leaving 10/17 claims verified. Fix: every publish now carries `Upstash-Flow-Control-Key:
+  vanta-verification` + `Upstash-Flow-Control-Value: parallelism=2` and `Upstash-Retries: 5`
+  (`_qstash_publish`), so the queue holds the backlog instead of the instance absorbing it. Re-run of
+  the same task: **20/20 messages DELIVERED, 200, zero 502, zero restarts, 17/17 claims got a verdict**
+  in ~6 min (delivery times 113 ms for posts with no verifiable claim up to 309 s for the 5-claim post).
+  Flow control is accepted on the free QStash plan (publish returns 201). The 4 messages in `/v2/dlq`
+  are old probe posts from before the signature fix, not from this run.
 - **Auth:** `POST /api/auth/register|login` + `GET /api/auth/me`, JWT (Bearer, 24h) guarding **every** `/api` route (only `/api/health` + `/auth/*` public). All tasks/posts/claims/verification are scoped to the authenticated user (404 cross-user — existence never leaks). `POST /api/auth/change-password`. Frontend: Login/Register view + profile dropdown (Settings, Log out) in the header. Password hashing via bcrypt (`PyJWT` + `bcrypt` added to requirements).
 - **Settings:** `GET|PUT /api/settings` — profile fields, `default_mode` (quick/deep, applied when `POST /api/analyze` omits mode), `preferred_model` (validated against the OpenRouter catalog; applied per-request), and **BYOK**: per-provider API keys (OpenRouter, ScrapeCreators, NewsAPI, Google Fact Check, ClaimBuster, Apify) stored **Fernet-encrypted** in `user_settings.byok_keys_enc` (key derived from `BYOK_ENCRYPTION_KEY` or `SECRET_KEY` — rotating the secret makes stored keys undecryptable; users re-enter them). API responses never contain key material (masked `••••xxxx` hints + configured/source only).
 - **BYOK resolution:** per-run ContextVar installed at every entry point (request guard for sync routes; background thread + Celery worker resolve from `Task.user_id`). Clients resolve user key → server env, lazily per request (singletons incl. `OpenRouterClient` refresh auth per call; analyzer collector cache is keyed by a key fingerprint so cached clients can't leak keys between users). Missing keys degrade honestly (no mock data; ClaimBuster stays `unavailable` until a key exists).
