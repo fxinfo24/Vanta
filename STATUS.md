@@ -74,6 +74,14 @@ Two products consolidated into **one Flask app** (`app/web/app.py:create_app()`)
   0.245 (non-zero, so the Layer 7 write fix holds). Diagnosing this cost several deploys — QStash's
   `/v2/events` records `responseStatus`, `responseHeaders` and a base64 `responseBody` per attempt, which
   is the fastest way to see what production answered.
+- **Private Facebook profiles are reported as a completed analysis of nothing (Nov 2026, open).** A deep run of
+  `facebook/mahmudulkabir007` finished 100% in 3 min with `executive_summary: "Summary generation failed"`,
+  `authenticity: {}`, 0 posts/comments and every section `not_measured`. Cause: ScrapeCreators answers the
+  profile and posts endpoints with `{"success": true, "isPrivate": true, "account_status": "private",
+  "message": "Profile is private"}` and charges 0 credits (so no credit waste, and the photos endpoint even
+  says `Profile not found` for the same URL). The collector treats that 200 as a successful empty
+  collection, so the task reports COMPLETED instead of telling the user the profile is private. Needs a
+  first-class "unavailable/private" outcome; not fixed yet.
 - **Auth:** `POST /api/auth/register|login` + `GET /api/auth/me`, JWT (Bearer, 24h) guarding **every** `/api` route (only `/api/health` + `/auth/*` public). All tasks/posts/claims/verification are scoped to the authenticated user (404 cross-user — existence never leaks). `POST /api/auth/change-password`. Frontend: Login/Register view + profile dropdown (Settings, Log out) in the header. Password hashing via bcrypt (`PyJWT` + `bcrypt` added to requirements).
 - **Settings:** `GET|PUT /api/settings` — profile fields, `default_mode` (quick/deep, applied when `POST /api/analyze` omits mode), `preferred_model` (validated against the OpenRouter catalog; applied per-request), and **BYOK**: per-provider API keys (OpenRouter, ScrapeCreators, NewsAPI, Google Fact Check, ClaimBuster, Apify) stored **Fernet-encrypted** in `user_settings.byok_keys_enc` (key derived from `BYOK_ENCRYPTION_KEY` or `SECRET_KEY` — rotating the secret makes stored keys undecryptable; users re-enter them). API responses never contain key material (masked `••••xxxx` hints + configured/source only).
 - **BYOK resolution:** per-run ContextVar installed at every entry point (request guard for sync routes; background thread + Celery worker resolve from `Task.user_id`). Clients resolve user key → server env, lazily per request (singletons incl. `OpenRouterClient` refresh auth per call; analyzer collector cache is keyed by a key fingerprint so cached clients can't leak keys between users). Missing keys degrade honestly (no mock data; ClaimBuster stays `unavailable` until a key exists).
