@@ -551,6 +551,26 @@ def test_sentiment_survives_without_nltk(analyzer, monkeypatch):
     assert nlp.sentiment_backend() == "lexicon"
 
 
+def test_truncated_json_moves_on_to_the_fallback_model(monkeypatch):
+    """A section cut mid-JSON must not cost the section when another model can answer."""
+    from app.core.openrouter_client import openrouter_client
+
+    monkeypatch.setenv("OPENROUTER_FALLBACK_MODELS", "alt/model:free")
+    calls = []
+
+    def fake_request(messages, model=None, temperature=0.7, max_tokens=2000):
+        calls.append((model, max_tokens))
+        if model == "alt/model:free":
+            return '{"themes": ["civic"], "ok": true}'
+        return '{"themes": ["civic"'   # cut off mid-JSON
+
+    monkeypatch.setattr(openrouter_client, "_make_request", fake_request)
+    out = openrouter_client._request_json(
+        [{"role": "user", "content": "hi"}], "primary/model", 0.3, 3000, label="test")
+    assert out["themes"] == ["civic"]
+    assert calls[-1] == ("alt/model:free", 3000)
+
+
 def test_private_facebook_profile_is_reported_not_collected():
     """A private profile is a 200 with no body, so the status has to travel.
 

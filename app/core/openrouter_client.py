@@ -469,6 +469,16 @@ class OpenRouterClient:
                       (os.getenv("OPENROUTER_FALLBACK_MODELS") or "").split(",") if m.strip()]
         return [m for m in configured if m != model]
 
+    def _one(self, messages: List[Dict[str, str]], model: str, temperature: float,
+             max_tokens: int) -> str:
+        """One completion call, returning '' when the model produced nothing."""
+        try:
+            return self._make_request(messages=messages, model=model,
+                                      temperature=temperature, max_tokens=max_tokens) or ""
+        except OpenRouterError as exc:
+            logger.warning(f"{model} failed: {exc}")
+            return ""
+
     def _complete(self, messages: List[Dict[str, str]], model: str,
                   temperature: float = 0.7, max_tokens: int = 2000) -> str:
         """A completion, retried with a bigger budget and then on another model.
@@ -511,30 +521,42 @@ class OpenRouterClient:
                       max_tokens: int, label: str = "analysis") -> Any:
         """Request a JSON completion with the recovery paths every caller needs.
 
-        Empty completion -> another model (see _complete). Truncated JSON -> one
-        re-request at double budget (capped). Anything still unparseable raises
+        Each candidate gets one attempt at the requested budget and, if that is
+        blank or cut mid-JSON, one at double budget (capped 12000): the requested
+        model first, then OPENROUTER_FALLBACK_MODELS. Reasoning burns the same
+        budget (measured: 6997 reasoning tokens for a 4053-character JSON, and a
+        41-post analysis answering 0 characters at 3500), and free providers
+        also return blanks intermittently, so giving up after a same-model retry
+        left whole sections empty (live: authenticity dropped from a run where
+        every other section was filled). Anything still unparseable raises
         JSONDecodeError so the caller reports absence instead of inventing
         defaults.
         """
-        response = self._complete(
-            messages=messages, model=model, temperature=temperature, max_tokens=max_tokens
-        )
-        if not response.strip():
-            raise ValueError(f"Empty LLM response for {label} after retry")
+        budgets = [max_tokens]
+        if max_tokens < 12000:
+            budgets.append(min(max_tokens * 2, 12000))
 
-        try:
-            return self._parse_json(self._clean_json_text(response))
-        except json.JSONDecodeError as e:
-            if not self._is_truncation_error(e):
-                raise
-            logger.warning(f"Truncated JSON for {label} ({e}); retrying with larger max_tokens")
-            retry = self._make_request(
-                messages=messages, model=model, temperature=temperature,
-                max_tokens=min(max_tokens * 2, 12000),
-            ) or ""
-            if not retry.strip():
-                raise
-            return self._parse_json(self._clean_json_text(retry))
+        last_truncation: Optional[json.JSONDecodeError] = None
+        for candidate in [model] + self._fallback_models(model):
+            for budget in budgets:
+                text = self._one(messages, candidate, temperature, budget)
+                if not text.strip():
+                    continue
+                try:
+                    parsed = self._parse_json(self._clean_json_text(text))
+                except json.JSONDecodeError as exc:
+                    if not self._is_truncation_error(exc):
+                        raise
+                    last_truncation = exc
+                    logger.warning(f"Truncated JSON for {label} from {candidate} at {budget}: {exc}")
+                    continue
+                if candidate != model or budget != max_tokens:
+                    logger.warning(f"{label}: recovered with {candidate} at {budget} tokens")
+                return parsed
+
+        if last_truncation is not None:
+            raise last_truncation
+        raise ValueError(f"Empty LLM response for {label} after retry")
 
     def analyze(self, prompt: str, system_prompt: str = None, model_type: str = "general", max_tokens: int = 6000) -> Dict[str, Any]:
         """
@@ -552,39 +574,18 @@ class OpenRouterClient:
         model = self.default_models.get(model_type, self.default_models["general"])
         
         try:
-            # Nemotron reasoning models burn tokens thinking, so a small budget
-            # truncates long JSON. Empty completions are recovered by
-            # _complete's model fallback, not by asking the same model twice.
-            response = self._complete(
-                messages=messages,
+            # _request_json walks the recovery path shared by every structured
+            # section: bigger budget first, then the configured fallback models.
+            return self._request_json(
+                messages,
                 model=model,
                 temperature=0.3,  # Low temp for structured data
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                label=f"model_type={model_type}",
             )
-            if not response.strip():
-                raise ValueError(f"Empty LLM response for model_type={model_type} after retry")
-            
-            clean_response = self._clean_json_text(response)
-            try:
-                return self._parse_json(clean_response)
-            except json.JSONDecodeError as e:
-                # Truncated output (hit max_tokens mid-JSON) is recoverable:
-                # re-request ONCE with double the token budget.
-                if self._is_truncation_error(e):
-                    logger.warning(f"Truncated JSON for model_type={model_type} ({e}); retrying with larger max_tokens")
-                    retry = self._make_request(
-                        messages=messages,
-                        model=model,
-                        temperature=0.3,
-                        max_tokens=min(max_tokens * 2, 12000)
-                    ) or ""
-                    if retry.strip():
-                        return self._parse_json(self._clean_json_text(retry))
-                raise
-            
         except json.JSONDecodeError as e:
             logger.error(f"Generic analysis JSON parse failed: {e}")
-            return {"error": "JSON parse error", "raw_response": clean_response}
+            return {"error": "JSON parse error"}
         except Exception as e:
             logger.error(f"Generic analysis failed: {e}")
             return {"error": str(e)}
