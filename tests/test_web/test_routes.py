@@ -647,6 +647,8 @@ def test_verification_job_runs_one_post_when_the_signature_is_valid(client, app,
     import app.core.tasks as tasks_mod
     monkeypatch.setenv("QSTASH_TOKEN", "tok")
     monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
+    # The destination in the signature must match what the app computes.
+    monkeypatch.setenv("PUBLIC_API_BASE_URL", "http://localhost")
 
     calls = []
     monkeypatch.setattr(
@@ -669,6 +671,7 @@ def test_dispatch_prefers_qstash_over_the_in_process_thread(app, monkeypatch):
     import app.web.routes.api as api_mod
     monkeypatch.setenv("QSTASH_TOKEN", "tok")
     monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
+    monkeypatch.setenv("PUBLIC_API_BASE_URL", "https://api.example.com")
     monkeypatch.delenv("FORCE_CELERY", raising=False)
 
     sent = []
@@ -681,6 +684,7 @@ def test_dispatch_prefers_qstash_over_the_in_process_thread(app, monkeypatch):
 
     assert result["mode"] == "qstash"
     assert result["queued"] == 2
+    assert result["destination"] == "https://api.example.com/api/verification/job"
     assert sent == [{"post_id": "p1", "max_claims": 3},
                     {"post_id": "p2", "max_claims": 3}]
 
