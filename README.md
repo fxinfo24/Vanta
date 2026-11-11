@@ -223,6 +223,10 @@ cd frontend && npm run dev
 | `DATABASE_URI` | No | PostgreSQL URL (defaults to SQLite) |
 | `REDIS_URL` | No | For Celery background tasks |
 | `FORCE_CELERY` | No | Set to "true" to use Celery over threading |
+| `QSTASH_TOKEN` | No | Upstash QStash: durable verification jobs, no worker process (free 1,000 msgs/day) |
+| `QSTASH_CURRENT_SIGNING_KEY` | No | Required with `QSTASH_TOKEN` to verify QStash deliveries |
+| `QSTASH_NEXT_SIGNING_KEY` | No | QStash key rotation |
+| `PUBLIC_API_BASE_URL` | No | Externally reachable API base for signed QStash destinations |
 
 ### Verify Deployment
 

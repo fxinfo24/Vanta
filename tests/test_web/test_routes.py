@@ -605,6 +605,85 @@ def test_verify_task_queues_the_work_instead_of_blocking(client, app, monkeypatc
     assert len(calls[0][0]) == 2
 
 
+def _qstash_sign(body: bytes, destination: str, key: str = "sig_test_key") -> str:
+    """Mimic QStash's Upstash-Signature: HS256 JWT over body hash + destination."""
+    import base64
+    import hashlib
+    import time as _time
+    import jwt
+    digest = base64.urlsafe_b64encode(hashlib.sha256(body).digest()).rstrip(b"=").decode()
+    return jwt.encode({"iss": "Upstash", "sub": destination, "body": digest,
+                       "exp": int(_time.time()) + 300}, key, algorithm="HS256")
+
+
+def test_qstash_signature_binds_the_body_and_the_destination(app, monkeypatch):
+    """The signature is the only credential on the public job endpoint."""
+    from app.web.routes.api import _qstash_signature_ok
+    monkeypatch.setenv("QSTASH_TOKEN", "tok")
+    monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
+    monkeypatch.delenv("QSTASH_NEXT_SIGNING_KEY", raising=False)
+
+    body = b'{"post_id": "p1", "max_claims": 2}'
+    dest = "https://api.example.com/api/verification/job"
+    sig = _qstash_sign(body, dest)
+
+    assert _qstash_signature_ok(body, sig, dest)
+    assert not _qstash_signature_ok(body + b" ", sig, dest), "a tampered body must fail"
+    assert not _qstash_signature_ok(body, sig, "https://evil.example.com/api/verification/job"), \
+        "a signature for another destination must fail"
+    assert not _qstash_signature_ok(body, _qstash_sign(body, dest, "wrong_key"), dest)
+    assert not _qstash_signature_ok(body, "", dest)
+
+
+def test_verification_job_refuses_unsigned_callers(client, monkeypatch):
+    monkeypatch.setenv("QSTASH_TOKEN", "tok")
+    monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
+    resp = client.post("/api/verification/job", json={"post_id": "p1"})
+    assert resp.status_code == 401
+
+
+def test_verification_job_runs_one_post_when_the_signature_is_valid(client, app, monkeypatch):
+    import app.core.tasks as tasks_mod
+    monkeypatch.setenv("QSTASH_TOKEN", "tok")
+    monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
+
+    calls = []
+    monkeypatch.setattr(
+        tasks_mod, "run_verification_for_posts",
+        lambda post_ids, max_claims=20: calls.append((list(post_ids), max_claims)) or [{"claim_id": "c1"}],
+    )
+    body = json.dumps({"post_id": "post_qstash_1", "max_claims": 1}).encode()
+    resp = client.post(
+        "/api/verification/job", data=body,
+        headers={"Content-Type": "application/json",
+                 "Upstash-Signature": _qstash_sign(body, "http://localhost/api/verification/job")},
+    )
+    assert resp.status_code == 200
+    assert resp.get_json() == {"post_id": "post_qstash_1", "claims_processed": 1}
+    assert calls == [(["post_qstash_1"], 1)]
+
+
+def test_dispatch_prefers_qstash_over_the_in_process_thread(app, monkeypatch):
+    """One signed message per post: small enough to finish, retried by QStash."""
+    import app.web.routes.api as api_mod
+    monkeypatch.setenv("QSTASH_TOKEN", "tok")
+    monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
+    monkeypatch.delenv("FORCE_CELERY", raising=False)
+
+    sent = []
+    monkeypatch.setattr(api_mod, "_qstash_publish",
+                        lambda token, destination, payloads: (sent.extend(payloads),
+                                                              (len(payloads), []))[1])
+
+    with app.test_request_context("/api/verification/task/1/run", method="POST"):
+        result = api_mod._dispatch_verification(["p1", "p2"], 3)
+
+    assert result["mode"] == "qstash"
+    assert result["queued"] == 2
+    assert sent == [{"post_id": "p1", "max_claims": 3},
+                    {"post_id": "p2", "max_claims": 3}]
+
+
 def test_api_get_results_not_completed(client, app):
     """Test getting results for non-completed task"""
     with app.app_context():

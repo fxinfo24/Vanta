@@ -6,6 +6,8 @@ Handles API endpoints for tasks and analysis results
 from flask import Blueprint, jsonify, request, current_app, send_file, g, abort
 from pathlib import Path
 from datetime import datetime, timezone
+import base64
+import hashlib
 import hmac
 import json
 import threading
@@ -40,6 +42,8 @@ api_bp = Blueprint("api", __name__)
 _PUBLIC_ENDPOINTS = {
     "api.health_check", "api.monitoring_self_test", "api.auth_register",
     "api.auth_login", "api.auth_forgot_password", "api.auth_reset_password",
+    # Server-to-server only: the Upstash-Signature header is its credential.
+    "api.verification_job",
 }
 
 
@@ -1844,6 +1848,113 @@ def verify_task(task_id):
     }), 202
 
 
+# ---------------------------------------------------------------------------
+# Upstash QStash: durable delivery without a worker process
+# ---------------------------------------------------------------------------
+# A Redis broker is only the mailbox; draining it needs a process that stays
+# alive, and Render has no free background-worker tier. QStash is an HTTP
+# queue instead: one signed delivery per post to /api/verification/job, retried
+# on failure, and a delivery also wakes the free service when it has spun down.
+# Inert unless QSTASH_TOKEN + a signing key are configured.
+
+QSTASH_PUBLISH_URL = "https://qstash.upstash.io/v2/publish"
+
+
+def _qstash_config():
+    """(publish token, [signing keys]) -- empty when QStash is not set up."""
+    token = (os.getenv("QSTASH_TOKEN") or "").strip()
+    keys = [k.strip() for k in (os.getenv("QSTASH_CURRENT_SIGNING_KEY"),
+                                os.getenv("QSTASH_NEXT_SIGNING_KEY")) if k and k.strip()]
+    if not token or not keys:
+        return None, []
+    return token, keys
+
+
+def _public_base_url():
+    """Externally reachable base for signed destinations.
+
+    QStash signs the exact destination URL, so it has to be the URL the outside
+    world uses; behind Render's proxy request.url_root can be the internal one.
+    """
+    return (os.getenv("PUBLIC_API_BASE_URL") or request.url_root).rstrip("/")
+
+
+def _qstash_publish(token, destination, payloads):
+    """Publish one message per payload. Returns (published, errors)."""
+    import urllib.error
+    import urllib.request
+    published, errors = 0, []
+    for payload in payloads:
+        req = urllib.request.Request(f"{QSTASH_PUBLISH_URL}/{destination}",
+                                     data=json.dumps(payload).encode(), method="POST")
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Upstash-Retries", "3")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                resp.read()
+            published += 1
+        except (OSError, ValueError) as exc:
+            errors.append(str(exc)[:200])
+    return published, errors
+
+
+def _qstash_signature_ok(raw_body, signature, destination):
+    """Verify Upstash-Signature: an HS256 JWT binding the body hash to the URL."""
+    import jwt
+    _, keys = _qstash_config()
+    if not signature or not keys:
+        return False
+    digest = hashlib.sha256(raw_body).digest()
+    expected = {base64.urlsafe_b64encode(digest).rstrip(b"=").decode(),
+                base64.b64encode(digest).decode()}
+    for key in keys:
+        try:
+            claims = jwt.decode(signature, key, algorithms=["HS256"],
+                                options={"verify_aud": False}, leeway=5)
+        except jwt.InvalidTokenError:
+            continue
+        if str(claims.get("body") or "") not in expected:
+            continue
+        sub = str(claims.get("sub") or "").rstrip("/")
+        if sub and destination and sub != destination.rstrip("/"):
+            continue
+        return True
+    return False
+
+
+@api_bp.route("/verification/job", methods=["POST"])
+def verification_job():
+    """QStash destination: verify one post's claims, server to server.
+
+    No user JWT here -- the signature is the credential, so this must never
+    read or return per-user data. One post per delivery keeps the request
+    inside gunicorn's 300s timeout; a QStash retry resumes because claims that
+    already have Layers 4 and 7 are skipped.
+    """
+    raw = request.get_data() or b""
+    destination = _public_base_url() + "/api/verification/job"
+    if not _qstash_signature_ok(raw, request.headers.get("Upstash-Signature", ""), destination):
+        return jsonify({"error": "Invalid or missing Upstash-Signature"}), 401
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        return jsonify({"error": "Body must be JSON"}), 400
+    post_id = data.get("post_id")
+    if not post_id:
+        return jsonify({"error": "post_id is required"}), 400
+
+    from app.core.tasks import run_verification_for_posts
+    try:
+        summaries = run_verification_for_posts([post_id], int(data.get("max_claims", 20)))
+    except Exception as exc:
+        # 500 is deliberate: QStash retries it, and the retry picks up where
+        # this attempt stopped because completed claims are skipped.
+        logger.error(f"QStash verification job failed for post {post_id}: {exc}", exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"post_id": post_id, "claims_processed": len(summaries)}), 200
+
+
 def _verification_worker(flask_app, post_ids, max_claims):
     """Background-thread body: same loop the Celery task runs."""
     with flask_app.app_context():
@@ -1859,8 +1970,24 @@ def _dispatch_verification(post_ids, max_claims):
     """Hand layers 3-7 to a worker instead of the request that asked for them.
 
     Four layers per claim at tens of seconds each does not fit a request; the
-    caller gets the mode back and polls /verification/results.
+    caller gets the mode back and polls /verification/results. Preference order:
+    QStash (survives restarts, no extra process), Celery (needs a live worker),
+    then a thread in this process (works, but dies with it).
     """
+    token, _ = _qstash_config()
+    if token:
+        destination = _public_base_url() + "/api/verification/job"
+        published, errors = _qstash_publish(
+            token, destination,
+            [{"post_id": pid, "max_claims": max_claims} for pid in post_ids],
+        )
+        if published:
+            result = {"mode": "qstash", "queued": published, "destination": destination}
+            if errors:
+                result["publish_errors"] = errors
+            return result
+        logger.error(f"QStash publish failed for all {len(post_ids)} job(s): {errors}")
+
     if os.getenv("FORCE_CELERY", "").lower() == "true" and os.getenv("REDIS_URL"):
         try:
             from app.core.tasks import run_verification_task

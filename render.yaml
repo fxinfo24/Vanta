@@ -33,6 +33,16 @@ envVarGroups:
         sync: false
       - key: APIFY_API_TOKEN
         sync: false
+      # Upstash QStash: durable verification jobs without a worker process.
+      # Inert while unset; dispatching falls back to a thread.
+      - key: QSTASH_TOKEN
+        sync: false
+      - key: QSTASH_CURRENT_SIGNING_KEY
+        sync: false
+      - key: QSTASH_NEXT_SIGNING_KEY
+        sync: false
+      - key: PUBLIC_API_BASE_URL
+        sync: false
       - key: NEWSAPI_KEY
         sync: false
       - key: GOOGLE_FACT_CHECK_API_KEY
