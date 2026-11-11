@@ -471,23 +471,34 @@ class OpenRouterClient:
 
     def _complete(self, messages: List[Dict[str, str]], model: str,
                   temperature: float = 0.7, max_tokens: int = 2000) -> str:
-        """A completion, trying another model when the first returns nothing.
+        """A completion, retried with a bigger budget and then on another model.
 
-        Free providers intermittently answer 200 with an empty message, and a
-        retry against the same model tends to repeat it (measured on
-        nemotron-3-ultra: 200/finish_reason=stop/content=None three times in a
-        row on the same prompt, then content). A different model is the retry
-        that can actually recover, so a flaky upstream costs latency instead of
-        blank sections.
+        Two live failure modes both look like an empty message:
+        - reasoning models (every free model currently is one) spend the whole
+          completion budget thinking: a 41-post content analysis answered 0
+          characters at max_tokens=3500 with 3500 reasoning tokens, and only
+          emitted its JSON at 8000. A bigger budget on the same model fixes it.
+        - free providers intermittently answer 200 with `content: None` even
+          when the budget is ample, and a retry against the same model tends to
+          repeat it (nemotron-3-ultra three times in a row, then content). A
+          different model is the retry that can recover that.
+
+        A blank section is therefore only reported after both attempts fail.
         """
+        budget = min(max_tokens * 2, 12000) if max_tokens < 12000 else max_tokens
         text = self._make_request(messages=messages, model=model,
                                  temperature=temperature, max_tokens=max_tokens) or ""
         if text.strip():
             return text
+        text = self._make_request(messages=messages, model=model,
+                                  temperature=temperature, max_tokens=budget) or ""
+        if text.strip():
+            logger.warning(f"Empty completion from {model} at {max_tokens} tokens; recovered at {budget}")
+            return text
         for alt in self._fallback_models(model):
             try:
                 text = self._make_request(messages=messages, model=alt,
-                                          temperature=temperature, max_tokens=max_tokens) or ""
+                                          temperature=temperature, max_tokens=budget) or ""
             except OpenRouterError as exc:
                 logger.warning(f"Fallback model {alt} failed: {exc}")
                 continue
@@ -658,7 +669,9 @@ Return comprehensive, platform-specific insights that leverage {ctx['name']}'s u
                 messages,
                 model=self.default_models["content_analysis"],
                 temperature=0.3,
-                max_tokens=3500,
+                # Reasoning tokens come out of this same budget, and a 41-post
+                # analysis needed ~8000 to leave room for its JSON.
+                max_tokens=8000,
                 label=f"content_analysis:{platform}",
             )
             analysis["_platform"] = platform
