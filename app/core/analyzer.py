@@ -269,9 +269,13 @@ class SocialMediaAnalyzer:
                 "status": "measured" if measured else "not_measured",
             }
 
+        from ..utils.nlp_utils import sentiment_backend
+
+        scorer = "the VADER lexicon" if sentiment_backend() == "vader" else "an offline word list"
+
         items = [
             section("sentiment", results.get("sentiment"),
-                    f"{avail['n_items']} collected posts, scored with the VADER lexicon",
+                    f"{avail['n_items']} collected posts, scored with {scorer}",
                     avail["n_items"] > 0),
             section("content", results.get("content_analysis"),
                     f"{avail['n_items']} posts, {avail['engagement_items']} with engagement metrics",

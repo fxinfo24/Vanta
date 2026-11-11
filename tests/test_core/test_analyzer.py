@@ -539,6 +539,18 @@ def test_sentiment_is_scored_from_posts_not_a_default(analyzer):
     }
 
 
+def test_sentiment_survives_without_nltk(analyzer, monkeypatch):
+    """Production installs no nltk; the offline scorer must not read all-neutral."""
+    import app.utils.nlp_utils as nlp
+
+    monkeypatch.setattr(nlp, "NLTK_AVAILABLE", False)
+    long_post = ("Today we gathered with neighbors across the city to talk about the work ahead. "
+                 "Thanks to everyone who showed up early, stayed late and made it a great day.")
+    out = analyzer._sentiment_section({}, {"content": [{"text": long_post}]})
+    assert out["positive"] == 100, out
+    assert nlp.sentiment_backend() == "lexicon"
+
+
 def test_private_facebook_profile_is_reported_not_collected():
     """A private profile is a 200 with no body, so the status has to travel.
 

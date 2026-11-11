@@ -284,6 +284,16 @@ def extract_entities(text: str) -> Dict[str, List[str]]:
         return {"PERSON": [], "ORG": [], "GPE": [], "DATE": [], "MISC": []}
 
 
+def sentiment_backend() -> str:
+    """Which scorer analyze_sentiment uses here: 'vader' or 'lexicon'.
+
+    Production installs the minimal requirements.txt, which has no nltk, so the
+    offline word list is what runs on the host - callers must label results
+    accordingly instead of claiming VADER.
+    """
+    return "vader" if NLTK_AVAILABLE else "lexicon"
+
+
 def analyze_sentiment(text: str) -> Dict[str, float]:
     """
     Analyze sentiment of text
@@ -305,14 +315,18 @@ def analyze_sentiment(text: str) -> Dict[str, float]:
             logger.error(f"Error in sentiment analysis: {str(e)}")
 
     # Simple fallback sentiment analysis
-    pos_words = sum(1 for word in tokenize_text(text) if word in positive_lexicon)
-    neg_words = sum(1 for word in tokenize_text(text) if word in negative_lexicon)
-    total_words = max(len(tokenize_text(text)), 1)  # Avoid division by zero
+    tokens = tokenize_text(text)
+    pos_words = sum(1 for word in tokens if word in positive_lexicon)
+    neg_words = sum(1 for word in tokens if word in negative_lexicon)
 
-    pos_score = min(pos_words / total_words, 1.0)
-    neg_score = min(neg_words / total_words, 1.0)
-    neu_score = max(1.0 - pos_score - neg_score, 0.0)
-    compound = pos_score - neg_score
+    # Scoring by word-count ratio dilutes a single "great" in a long post to
+    # 0.017, so every real post came back neutral (measured: 30 posts, 0
+    # non-neutral, and the report showed a flat 100% neutral). VADER saturates
+    # on a few strong words; this does too, at three words per unit.
+    compound = max(-1.0, min(1.0, (pos_words - neg_words) / 3.0))
+    pos_score = compound if compound > 0 else 0.0
+    neg_score = -compound if compound < 0 else 0.0
+    neu_score = max(1.0 - abs(compound), 0.0)
 
     return {"pos": pos_score, "neg": neg_score, "neu": neu_score, "compound": compound}
 

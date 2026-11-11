@@ -153,10 +153,18 @@ class IntelligenceAnalyzer:
         """
         
         try:
-            result = self.ai.analyze(prompt, system_prompt, model_type="general")
-            return result.get("summary") or result.get("raw_response") or "Summary generation failed"
-        except:
-            return "Executive summary could not be generated."
+            # Reasoning tokens come out of the same budget, so a 6000-token
+            # request left the JSON cut off and `raw_response` was a briefing
+            # that stopped mid-word (live: "...or advocacy initiativ").
+            result = self.ai.analyze(prompt, system_prompt, model_type="general", max_tokens=9000)
+            summary = (result.get("summary") or "").strip()
+            if summary:
+                return summary
+            logger.warning("Executive summary unavailable: %s", result.get("error"))
+            return "Executive summary could not be generated in this run."
+        except Exception as exc:
+            logger.warning("Executive summary failed: %s", exc)
+            return "Executive summary could not be generated in this run."
 
 import json
 
