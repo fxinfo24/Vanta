@@ -41,6 +41,8 @@ envVarGroups:
         sync: false
       - key: QSTASH_NEXT_SIGNING_KEY
         sync: false
+      - key: QSTASH_URL
+        sync: false
       - key: PUBLIC_API_BASE_URL
         sync: false
       - key: NEWSAPI_KEY

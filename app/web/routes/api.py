@@ -1857,7 +1857,14 @@ def verify_task(task_id):
 # on failure, and a delivery also wakes the free service when it has spun down.
 # Inert unless QSTASH_TOKEN + a signing key are configured.
 
-QSTASH_PUBLISH_URL = "https://qstash.upstash.io/v2/publish"
+def _qstash_publish_url():
+    """Publish endpoint for this instance.
+
+    QStash instances are regional; the global host routes, but pointing at the
+    instance's own region avoids an extra hop from the API's region.
+    """
+    base = (os.getenv("QSTASH_URL") or "https://qstash.upstash.io").rstrip("/")
+    return base + "/v2/publish"
 
 
 def _qstash_config():
@@ -1885,7 +1892,7 @@ def _qstash_publish(token, destination, payloads):
     import urllib.request
     published, errors = 0, []
     for payload in payloads:
-        req = urllib.request.Request(f"{QSTASH_PUBLISH_URL}/{destination}",
+        req = urllib.request.Request(f"{_qstash_publish_url()}/{destination}",
                                      data=json.dumps(payload).encode(), method="POST")
         req.add_header("Authorization", f"Bearer {token}")
         req.add_header("Content-Type", "application/json")

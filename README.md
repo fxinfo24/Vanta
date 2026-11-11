@@ -226,6 +226,7 @@ cd frontend && npm run dev
 | `QSTASH_TOKEN` | No | Upstash QStash: durable verification jobs, no worker process (free 1,000 msgs/day) |
 | `QSTASH_CURRENT_SIGNING_KEY` | No | Required with `QSTASH_TOKEN` to verify QStash deliveries |
 | `QSTASH_NEXT_SIGNING_KEY` | No | QStash key rotation |
+| `QSTASH_URL` | No | Regional QStash endpoint (e.g. `https://qstash-us-east-1.upstash.io`) |
 | `PUBLIC_API_BASE_URL` | No | Externally reachable API base for signed QStash destinations |
 
 ### Verify Deployment
