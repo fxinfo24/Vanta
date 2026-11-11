@@ -70,6 +70,38 @@ class SocialMediaAnalyzer:
         threshold = self.config["analysis"]["confidence_threshold"]
         self.prediction_engine = PredictionEngine(confidence_threshold=threshold)
 
+    @staticmethod
+    def _sentiment_section(core_intel: Dict[str, Any], dossier_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Sentiment split for the collected posts.
+
+        A model-supplied distribution wins. Otherwise the posts themselves are
+        scored with the VADER lexicon in nlp_utils: a 41-post profile used to be
+        reported as 100% neutral from a hardcoded default, which the report read
+        as a finding about a plainly upbeat account. With nothing collected there
+        is no split to show, and coverage marks the section not measured.
+        """
+        given = ((core_intel or {}).get("general_analysis") or {}).get("sentiment")
+        if isinstance(given, dict) and {"positive", "neutral", "negative"} <= set(given):
+            return given
+
+        posts = [p for p in (dossier_data.get("content") or []) if isinstance(p, dict)]
+        texts = [str(p.get("text") or p.get("content") or "").strip() for p in posts]
+        texts = [t for t in texts if t]
+        if not texts:
+            return {"overall": "unknown", "positive": 0, "neutral": 0, "negative": 0}
+
+        from ..utils.nlp_utils import analyze_sentiment
+
+        counts = {"positive": 0, "neutral": 0, "negative": 0}
+        for text in texts:
+            compound = analyze_sentiment(text).get("compound", 0.0)
+            label = "positive" if compound >= 0.05 else "negative" if compound <= -0.05 else "neutral"
+            counts[label] += 1
+
+        total = len(texts)
+        percentages = {name: round(count * 100 / total) for name, count in counts.items()}
+        return {"overall": max(percentages, key=percentages.get), **percentages}
+
     def _get_collector(self, platform: str) -> DataCollector:
         """Get or create a collector for the specified platform.
 
@@ -239,7 +271,8 @@ class SocialMediaAnalyzer:
 
         items = [
             section("sentiment", results.get("sentiment"),
-                    f"{avail['n_items']} collected posts", avail["n_items"] > 0),
+                    f"{avail['n_items']} collected posts, scored with the VADER lexicon",
+                    avail["n_items"] > 0),
             section("content", results.get("content_analysis"),
                     f"{avail['n_items']} posts, {avail['engagement_items']} with engagement metrics",
                     avail["n_items"] > 0),
@@ -430,10 +463,7 @@ class SocialMediaAnalyzer:
                     "website": profile_data.get("website")
                 },
                 "connected_accounts": dossier_data.get("connected_accounts", []),
-                "sentiment": core_intel.get("general_analysis", {}).get("sentiment", {
-                    "overall": "neutral",
-                    "positive": 0, "neutral": 100, "negative": 0
-                }),
+                "sentiment": self._sentiment_section(core_intel, dossier_data),
                 "content_analysis": core_intel.get("general_analysis", {}),
                 "authenticity": core_intel.get("authenticity", {}),
                 "predictions": core_intel.get("predictions", {}),

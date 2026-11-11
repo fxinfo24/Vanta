@@ -74,14 +74,44 @@ Two products consolidated into **one Flask app** (`app/web/app.py:create_app()`)
   0.245 (non-zero, so the Layer 7 write fix holds). Diagnosing this cost several deploys — QStash's
   `/v2/events` records `responseStatus`, `responseHeaders` and a base64 `responseBody` per attempt, which
   is the fastest way to see what production answered.
-- **Private Facebook profiles are reported as a completed analysis of nothing (Nov 2026, open).** A deep run of
+- **Private Facebook profiles are reported as a completed analysis of nothing (Nov 2026, fixed).** A deep run of
   `facebook/mahmudulkabir007` finished 100% in 3 min with `executive_summary: "Summary generation failed"`,
   `authenticity: {}`, 0 posts/comments and every section `not_measured`. Cause: ScrapeCreators answers the
   profile and posts endpoints with `{"success": true, "isPrivate": true, "account_status": "private",
   "message": "Profile is private"}` and charges 0 credits (so no credit waste, and the photos endpoint even
-  says `Profile not found` for the same URL). The collector treats that 200 as a successful empty
-  collection, so the task reports COMPLETED instead of telling the user the profile is private. Needs a
-  first-class "unavailable/private" outcome; not fixed yet.
+  says `Profile not found` for the same URL). The collector treated that 200 as a successful empty
+  collection, so the task reported COMPLETED instead of telling the user the profile is private.
+  **Fix (commit `6a9cd6d`):** `scrape_client._normalize_generic_data` carries `availability` /
+  `availability_message`; `DeepDossierCollector._unavailable_reason` recognises private/not-found/deactivated
+  and returns before any feed or comment call; `SocialMediaAnalyzer` raises `CollectionEmptyError` when a
+  run has nothing to analyse, and `tasks.py` puts the reason in `task.message` (240 chars) instead of
+  "Failed". Proven live: task 28 (`facebook/mahmudulkabir007`, deep) → `FAILED` at 10% with "… cannot be
+  analysed: the provider reports this profile as private (Profile is private). No report was generated and
+  nothing was filled in to replace it."
+- **Blank LLM sections on a successful collection (Nov 2026, fixed).** Task 29 collected 41 posts and 100
+  comments for `facebook/BarackObama` and still returned `authenticity: analysis_unavailable`,
+  `content_analysis: "Analysis could not be generated in this run"`, `behavioral_profile: "Empty LLM response
+  for model_type=psych"` and a "Summary generation failed" executive summary. Two distinct causes, both
+  measured, not guessed:
+  1. **Reasoning tokens eat the completion budget.** Every free model on OpenRouter currently reasons before
+     answering, and `max_tokens` covers thinking + answer. Replaying the real 41-post prompt: at
+     `max_tokens=3500` (the content-analysis setting) the response was `finish_reason: length`, **0
+     characters**, 3500 completion tokens spent; `recursive/flint-v1.0:free` used **6997 reasoning tokens**
+     to write a 4053-character JSON, which only appeared at `max_tokens=8000`. `reasoning.effort: low` made
+     it worse (8607 reasoning tokens, truncated output), so the fix is budget, not effort.
+  2. **Empty completions are intermittent.** `nvidia/nemotron-3-ultra-550b-a55b:free` returned
+     200/`finish_reason: stop`/`content: None` three times in a row on one prompt and content on the next
+     identical call, so a same-model retry is not a retry that can help.
+  **Fix (commits `4220f7d`, `18e2204`, `b5693e0`):** `openrouter_client._complete` now retries a blank
+  answer once on the same model at double budget (capped 12000), then on `OPENROUTER_FALLBACK_MODELS`
+  (Render + `.env`: `nvidia/nemotron-3.5-super-vl:free, baidu/ernie-5.5-flash-preview:free,
+  dots-studio/dots-3-note-preview:free`) at that larger budget; content analysis asks for 8000 up front.
+  Proven on task 31 (same cached dossier, 0 credits): every section populated — `content_analysis` with 7
+  themes and 5 insights, `authenticity` bot likelihood 0.05 with green/red flags, `behavioral_profile`,
+  `predictions`, gated `belief_system`. **Sentiment was a separate lie:** the report showed
+  `positive 0 / neutral 100 / negative 0` from a hardcoded default that `data_coverage` then called
+  "measured (41 collected posts)". `analyzer._sentiment_section` now scores the collected posts with the
+  VADER lexicon (model distribution wins when one is supplied) and reports `unknown` with no posts.
 - **Whole-task verification through QStash, no worker process (Nov 2026, fixed).** `POST
   /api/verification/task/<id>/run` on task 26 published **20 messages, one per collected post**
   (`mode: qstash`, no Celery/Redis involved: the only Render service is `vanta-api` (`web_service`),

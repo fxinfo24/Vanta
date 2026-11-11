@@ -521,6 +521,24 @@ def test_empty_completion_recovers_with_a_configured_fallback_model(monkeypatch)
     assert openrouter_client._complete([{"role": "user", "content": "hi"}], "primary/model") == ""
 
 
+def test_sentiment_is_scored_from_posts_not_a_default(analyzer):
+    """An upbeat 41-post profile must not come back as 100% neutral."""
+    dossier = {"content": [
+        {"text": "Congratulations to everyone who voted today - great work!"},
+        {"text": "So happy to celebrate with this amazing team."},
+        {"text": "Terrible news about the storm; thinking of everyone affected."},
+    ]}
+    out = analyzer._sentiment_section({}, dossier)
+    assert out["positive"] > 0
+    assert sum(out[k] for k in ("positive", "neutral", "negative")) == 100
+    assert out["overall"] in ("positive", "neutral", "negative")
+
+    # Nothing collected: no split to report rather than a fabricated one.
+    assert analyzer._sentiment_section({}, {}) == {
+        "overall": "unknown", "positive": 0, "neutral": 0, "negative": 0
+    }
+
+
 def test_private_facebook_profile_is_reported_not_collected():
     """A private profile is a 200 with no body, so the status has to travel.
 
