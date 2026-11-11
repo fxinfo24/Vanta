@@ -618,12 +618,28 @@ def _qstash_sign(body: bytes, destination: str, key: str = "sig_test_key",
                        "exp": int(_time.time()) + 300}, key, algorithm="HS256")
 
 
+@pytest.fixture(autouse=True)
+def _no_qstash_by_default(monkeypatch):
+    """Never dispatch to a real queue from the suite.
+
+    Clearing the env vars is not enough: the app calls load_dotenv(override=True)
+    while decrypting BYOK keys mid-request, which puts them back. Patching the
+    seam keeps the promise regardless of what a developer's .env contains.
+    """
+    import app.web.routes.api as api_mod
+    monkeypatch.setattr(api_mod, "_qstash_config", lambda: (None, []))
+    yield
+
+
+def _enable_qstash(monkeypatch, key="sig_test_key"):
+    import app.web.routes.api as api_mod
+    monkeypatch.setattr(api_mod, "_qstash_config", lambda: ("tok", [key]))
+
+
 def test_qstash_signature_binds_the_body_and_the_destination(app, monkeypatch):
     """The signature is the only credential on the public job endpoint."""
     from app.web.routes.api import _qstash_signature_ok
-    monkeypatch.setenv("QSTASH_TOKEN", "tok")
-    monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
-    monkeypatch.delenv("QSTASH_NEXT_SIGNING_KEY", raising=False)
+    _enable_qstash(monkeypatch)
 
     body = b'{"post_id": "p1", "max_claims": 2}'
     dest = "https://api.example.com/api/verification/job"
@@ -647,18 +663,17 @@ def test_qstash_signature_binds_the_body_and_the_destination(app, monkeypatch):
 
 
 def test_verification_job_refuses_unsigned_callers(client, monkeypatch):
-    monkeypatch.setenv("QSTASH_TOKEN", "tok")
-    monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
+    _enable_qstash(monkeypatch)
     resp = client.post("/api/verification/job", json={"post_id": "p1"})
     assert resp.status_code == 401
 
 
 def test_verification_job_runs_one_post_when_the_signature_is_valid(client, app, monkeypatch):
     import app.core.tasks as tasks_mod
-    monkeypatch.setenv("QSTASH_TOKEN", "tok")
-    monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
+    import app.web.routes.api as api_mod
+    _enable_qstash(monkeypatch)
     # The destination in the signature must match what the app computes.
-    monkeypatch.setenv("PUBLIC_API_BASE_URL", "http://localhost")
+    monkeypatch.setattr(api_mod, "_public_base_url", lambda: "http://localhost")
 
     calls = []
     monkeypatch.setattr(
@@ -679,9 +694,8 @@ def test_verification_job_runs_one_post_when_the_signature_is_valid(client, app,
 def test_dispatch_prefers_qstash_over_the_in_process_thread(app, monkeypatch):
     """One signed message per post: small enough to finish, retried by QStash."""
     import app.web.routes.api as api_mod
-    monkeypatch.setenv("QSTASH_TOKEN", "tok")
-    monkeypatch.setenv("QSTASH_CURRENT_SIGNING_KEY", "sig_test_key")
-    monkeypatch.setenv("PUBLIC_API_BASE_URL", "https://api.example.com")
+    _enable_qstash(monkeypatch)
+    monkeypatch.setattr(api_mod, "_public_base_url", lambda: "https://api.example.com")
     monkeypatch.delenv("FORCE_CELERY", raising=False)
 
     sent = []

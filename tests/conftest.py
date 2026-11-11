@@ -25,6 +25,23 @@ logging.basicConfig(
 # Create test directories if they don't exist
 os.makedirs(os.path.join(ROOT_DIR, "test_results"), exist_ok=True)
 
+# A developer's .env can carry live QStash credentials. Dropping these at
+# import time is not enough (the app calls load_dotenv(override=True) when it
+# is imported), so the autouse fixture below clears them before every test.
+LIVE_SERVICE_VARS = ("QSTASH_TOKEN", "QSTASH_CURRENT_SIGNING_KEY",
+                     "QSTASH_NEXT_SIGNING_KEY", "QSTASH_URL",
+                     "PUBLIC_API_BASE_URL", "FORCE_CELERY")
+for _var in LIVE_SERVICE_VARS:
+    os.environ.pop(_var, None)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_live_queues(monkeypatch):
+    """Keep the suite off real infrastructure, whatever the local .env says."""
+    for var in LIVE_SERVICE_VARS:
+        monkeypatch.delenv(var, raising=False)
+    yield
+
 
 # Run cleanup script before pytest session starts
 def pytest_configure(config):
