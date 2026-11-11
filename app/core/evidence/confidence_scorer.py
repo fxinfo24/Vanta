@@ -105,7 +105,19 @@ class ConfidenceScorer:
         )
     
     def _extract_layer4_score(self, verification: VerificationResult) -> float:
-        """Extract Layer 4 fact-check confidence"""
+        """Extract Layer 4 fact-check confidence.
+
+        Layer 4 writes its score into ``evidence_chain["layer_4"]``; the
+        ``confidence_score`` column is filled by this scorer afterwards, so
+        reading the column first would feed the composite back into itself on
+        every re-score (and left the component at 0.0 for every fresh claim).
+        """
+        layer4 = (verification.evidence_chain or {}).get("layer_4") or {}
+        if isinstance(layer4, dict) and layer4:
+            summary = layer4.get("verdict_summary") or {}
+            for candidate in (layer4.get("confidence"), summary.get("confidence")):
+                if isinstance(candidate, (int, float)):
+                    return float(candidate)
         return verification.confidence_score or 0.0
     
     def _extract_layer5_score(self, evidence_chain: Dict) -> float:

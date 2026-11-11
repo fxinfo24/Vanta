@@ -1344,7 +1344,7 @@ def monitoring_self_test():
 # Reuses existing CLIs/engines: ingestor, claim_extractor, fact_check, temporal,
 # rag, confidence. No Product A behaviour is removed.
 
-def _verification_payload(post=None, claim=None, vr=None):
+def _verification_payload(post=None, claim=None, vr=None, with_chain=False):
     out = {}
     if post is not None:
         out["post"] = {
@@ -1378,6 +1378,23 @@ def _verification_payload(post=None, claim=None, vr=None):
             "completed_at": vr.completed_at.isoformat() if getattr(vr, "completed_at", None) else None,
             "evidence_chain_layers": list((vr.evidence_chain or {}).keys()),
         }
+        if with_chain:
+            # The reasoning Layer 6 produced was stored but never returned, so a
+            # verdict arrived with no way to see why. Detail view only: the list
+            # endpoints stay small.
+            chain = vr.evidence_chain or {}
+            layer6 = chain.get("layer_6") or {}
+            out["verification"]["layer_6"] = {
+                "verdict": layer6.get("verdict"),
+                "confidence": layer6.get("confidence"),
+                "reasoning": layer6.get("reasoning"),
+                "citations": layer6.get("citations") or [],
+                "grounding_score": layer6.get("grounding_score"),
+                "evidence_count": layer6.get("evidence_count"),
+                "model_used": layer6.get("model_used"),
+            }
+            out["verification"]["layer_4"] = chain.get("layer_4") or {}
+            out["verification"]["layer_5"] = chain.get("layer_5") or {}
     return out
 
 
@@ -1420,6 +1437,10 @@ def _run_claim_pipeline(claim):
             scorer = ConfidenceScorer()
             scored = scorer.score_verification(vr)
             vr.composite_verification_score = scored["confidence_score"]
+            # Same number, written where readers look for "confidence":
+            # nothing populated this column before, so every verdict reported
+            # confidence 0.0 while carrying a real composite beside it.
+            vr.confidence_score = scored["confidence_score"]
             if not vr.evidence_chain:
                 vr.evidence_chain = {}
             # Reassign (not in-place mutate): SQLAlchemy JSON columns don't detect
@@ -1656,7 +1677,7 @@ def get_verification_claim(claim_id):
     if post is None or post.user_id != _uid():
         return jsonify({"error": "Claim not found"}), 404
     vr = db.session.query(VerificationResult).filter_by(claim_id=claim.id).first()
-    return jsonify(_verification_payload(claim=claim, vr=vr))
+    return jsonify(_verification_payload(claim=claim, vr=vr, with_chain=True))
 
 
 @api_bp.route("/verification/claim/<claim_id>/review", methods=["POST"])
@@ -1750,16 +1771,25 @@ def run_verification_pipeline():
         for p in own_posts:
             extracted += len(extractor.extract_claims_from_post(p))
         summaries.append({"stage": "extract", "processed_posts": len(own_posts), "claims_extracted": extracted})
-    # 2-4) Fact-check -> temporal -> RAG -> confidence for claims lacking verification
-    from app.web.models.verification import VerificationResult
+    # 2-4) A worker runs fact-check -> temporal -> RAG -> confidence, which is
+    # per-claim CPU and network time rather than something a request can hold.
+    from app.core.tasks import run_verification_for_posts
     claims = (db.session.query(Claim).join(SocialMediaPost, Claim.post_id == SocialMediaPost.id)
               .filter(SocialMediaPost.user_id == _uid()).limit(limit).all())
-    for claim in claims:
-        vr = db.session.query(VerificationResult).filter_by(claim_id=claim.id).first()
-        if vr and vr.evidence_chain and "layer_4" in vr.evidence_chain and "layer_7" in vr.evidence_chain:
-            continue
-        summaries.append(_run_claim_pipeline(claim))
-    return jsonify({"message": "Verification pipeline complete", "summaries": summaries}), 200
+    post_ids = sorted({c.post_id for c in claims}) if claims else []
+    if not post_ids:
+        return jsonify({"message": "Nothing to verify", "summaries": summaries}), 200
+
+    max_claims = int(data.get("max_claims", limit))
+    if request.args.get("wait") == "1":
+        summaries.extend(run_verification_for_posts(post_ids, max_claims))
+        return jsonify({"message": "Verification pipeline complete", "mode": "inline",
+                        "posts": len(post_ids), "summaries": summaries}), 200
+
+    dispatch = _dispatch_verification(post_ids, max_claims)
+    return jsonify({"message": "Verification queued", "posts": len(post_ids),
+                    "max_claims": max_claims, "poll": "/api/verification/results",
+                    "summaries": summaries, **dispatch}), 202
 
 
 @api_bp.route("/verification/task/<int:task_id>/run", methods=["POST"])
@@ -1788,22 +1818,64 @@ def verify_task(task_id):
         return jsonify({"error": "Task produced no post to verify"}), 400
 
     max_claims = int(request.args.get("max_claims", 20))
-    remaining, summaries, processed = max_claims, [], 0
-    for pid in post_ids:
-        if remaining <= 0:
-            break
-        part = run_verification_pipeline_scoped(pid, max_claims=remaining).get_json()
-        summaries.extend(part.get("summaries", []))
-        processed += int(part.get("claims") or 0)
-        remaining -= int(part.get("claims") or 0)
+
+    # ?wait=1 keeps the old synchronous behaviour for small, scripted runs.
+    if request.args.get("wait") == "1":
+        from app.core.tasks import run_verification_for_posts
+        summaries = run_verification_for_posts(post_ids, max_claims)
+        return jsonify({
+            "message": "Task verification complete",
+            "mode": "inline",
+            "source": payload.get("source"),
+            "posts": len(post_ids),
+            "claims_processed": len(summaries),
+            "max_claims": max_claims,
+            "summaries": summaries,
+        }), 200
+
+    dispatch = _dispatch_verification(post_ids, max_claims)
     return jsonify({
-        "message": "Task verification complete",
+        "message": "Verification queued",
         "source": payload.get("source"),
         "posts": len(post_ids),
-        "claims_processed": processed,
         "max_claims": max_claims,
-        "summaries": summaries,
-    }), 200
+        "poll": "/api/verification/results",
+        **dispatch,
+    }), 202
+
+
+def _verification_worker(flask_app, post_ids, max_claims):
+    """Background-thread body: same loop the Celery task runs."""
+    with flask_app.app_context():
+        try:
+            from app.core.tasks import run_verification_for_posts
+            summaries = run_verification_for_posts(post_ids, max_claims)
+            logger.info(f"Verification finished: {len(post_ids)} post(s), {len(summaries)} claim(s)")
+        except Exception as exc:
+            logger.error(f"Verification worker failed: {exc}", exc_info=True)
+
+
+def _dispatch_verification(post_ids, max_claims):
+    """Hand layers 3-7 to a worker instead of the request that asked for them.
+
+    Four layers per claim at tens of seconds each does not fit a request; the
+    caller gets the mode back and polls /verification/results.
+    """
+    if os.getenv("FORCE_CELERY", "").lower() == "true" and os.getenv("REDIS_URL"):
+        try:
+            from app.core.tasks import run_verification_task
+            job = run_verification_task.delay(post_ids, max_claims)
+            return {"mode": "celery", "job_id": job.id}
+        except Exception as exc:
+            logger.error(f"Celery enqueue failed, using a thread: {exc}", exc_info=True)
+
+    thread = threading.Thread(
+        target=_verification_worker,
+        args=(current_app._get_current_object(), post_ids, max_claims),
+        daemon=True,
+    )
+    thread.start()
+    return {"mode": "thread"}
 
 
 def run_verification_pipeline_scoped(post_id=None, max_claims=None):

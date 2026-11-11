@@ -512,6 +512,99 @@ def test_post_from_task_flags_the_summary_fallback(client, app):
     assert "no post text" in body["message"]
 
 
+def test_claim_detail_returns_the_layer_6_reasoning(client, app):
+    """A verdict with no visible rationale is a number without an argument.
+
+    Layer 6 stored `reasoning` but `_verification_payload` only ever returned the
+    layer names, so the explanation was unreachable through the API.
+    """
+    with app.app_context():
+        from app.web.models import db
+        from app.web.models.verification import SocialMediaPost, Claim, VerificationResult
+        from app.web.models.verification import LanguageCode, MediaType
+
+        post = SocialMediaPost(
+            id="facebook_reason_test_1",
+            user_id=app.config["TEST_USER_ID"],
+            platform="facebook",
+            profile_id="reason_test",
+            text="The bridge reopened on 3 March 2024.",
+            content="The bridge reopened on 3 March 2024.",
+            detected_language=LanguageCode.EN,
+            media_type=MediaType.TEXT,
+        )
+        db.session.add(post)
+        db.session.commit()
+        claim = Claim(id="claim_reason_test_1", post_id=post.id,
+                      claim_text="The bridge reopened on 3 March 2024.")
+        db.session.add(claim)
+        db.session.commit()
+        vr = VerificationResult(
+            id="verification_claim_reason_test_1",
+            claim_id=claim.id,
+            confidence_score=0.375,
+            composite_verification_score=0.375,
+            evidence_chain={
+                "layer_4": {"verdict_summary": {"verdict": "NO_MATCH", "confidence": 0.0}},
+                "layer_6": {"verdict": "UNVERIFIABLE", "confidence": 0.6,
+                            "reasoning": "No matching verified fact-check was found.",
+                            "citations": [{"evidence_id": "1", "relevant_text": "NO_MATCH"}],
+                            "model_used": "nvidia/nemotron-3-ultra-550b-a55b:free"},
+                "layer_7": {"verdict": "LOW_CONFIDENCE"},
+            },
+        )
+        db.session.add(vr)
+        db.session.commit()
+
+    response = client.get("/api/verification/claim/claim_reason_test_1")
+    assert response.status_code == 200
+    body = response.get_json()
+    verification = body["verification"]
+    assert verification["layer_6"]["reasoning"] == "No matching verified fact-check was found."
+    assert verification["layer_6"]["model_used"].startswith("nvidia/")
+    assert verification["confidence"] == 0.375, \
+        "the stored confidence must be what the verdict was based on"
+
+
+def test_verify_task_queues_the_work_instead_of_blocking(client, app, monkeypatch):
+    """Four layers per claim take minutes; the request must return first."""
+    import time
+    import app.core.tasks as tasks_mod
+
+    calls = []
+    monkeypatch.setattr(
+        tasks_mod, "run_verification_for_posts",
+        lambda post_ids, max_claims=20: calls.append((list(post_ids), max_claims)) or [],
+    )
+
+    with app.app_context():
+        from app.web.models import db
+
+        task = Task(platform="facebook", profile_id="queue_test",
+                    status=TaskStatus.COMPLETED, user_id=app.config["TEST_USER_ID"])
+        task.result_data = {"profile_info": {"display_name": "Queue Test"},
+                            "raw_dossier": {"content": [
+                                {"text": "The bridge reopened on 3 March 2024 after repairs."},
+                                {"text": "Turnout reached 62 percent in the district election."},
+                            ]}}
+        task.has_result = True
+        db.session.add(task)
+        db.session.commit()
+        task_id = task.id
+
+    response = client.post(f"/api/verification/task/{task_id}/run")
+    assert response.status_code == 202
+    body = response.get_json()
+    assert body["mode"] in ("thread", "celery")
+    assert body["posts"] == 2
+
+    deadline = time.time() + 5
+    while not calls and time.time() < deadline:
+        time.sleep(0.05)
+    assert calls, "the worker never picked the posts up"
+    assert len(calls[0][0]) == 2
+
+
 def test_api_get_results_not_completed(client, app):
     """Test getting results for non-completed task"""
     with app.app_context():

@@ -383,6 +383,33 @@ def test_special_category_sections_are_off_by_default(monkeypatch):
         assert leak not in str(out)
 
 
+def test_layer4_confidence_is_read_from_the_chain_not_from_the_composite():
+    """Layer 4 scores into the evidence chain; the column is output, not input.
+
+    Reading `confidence_score` first meant the Layer 7 composite was fed back in
+    as if it were a fact-check result, and left the component at 0.0 for every
+    freshly verified claim.
+    """
+    from types import SimpleNamespace
+    from app.core.evidence.confidence_scorer import ConfidenceScorer
+
+    scorer = ConfidenceScorer()
+    fresh = SimpleNamespace(
+        evidence_chain={"layer_4": {"verdict_summary": {"confidence": 0.8}}},
+        confidence_score=0.0,
+    )
+    assert scorer._extract_layer4_score(fresh) == 0.8
+
+    rescored = SimpleNamespace(
+        evidence_chain={"layer_4": {"verdict_summary": {"confidence": 0.8}}},
+        confidence_score=0.3,  # previous composite, must be ignored
+    )
+    assert scorer._extract_layer4_score(rescored) == 0.8
+
+    legacy = SimpleNamespace(evidence_chain={}, confidence_score=0.42)
+    assert scorer._extract_layer4_score(legacy) == 0.42
+
+
 def test_credit_balance_reads_the_field_the_api_actually_sends(monkeypatch):
     """The live balance endpoint answers `creditCount` (the docs show another name).
 

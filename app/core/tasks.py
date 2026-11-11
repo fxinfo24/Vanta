@@ -31,7 +31,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from celery import Celery
 
@@ -61,6 +61,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_routes={
         "app.core.tasks.run_task_analysis": {"queue": "analysis"},
+        "app.core.tasks.run_verification_task": {"queue": "analysis"},
         "app.core.tasks.purge_expired_data": {"queue": "data"},
     },
     # Retention has to run without anyone remembering to run it. Daily is enough
@@ -104,6 +105,57 @@ def _save_results_to_file(flask_app, task_id: int, result: Dict[str, Any]) -> st
         json.dump(result, f, indent=2)
 
     return str(result_path)
+
+
+def run_verification_for_posts(post_ids: List[str], max_claims: int = 20) -> List[Dict[str, Any]]:
+    """Layers 3-7 for the given posts. Runs outside a request context.
+
+    A claim costs four layers (fact-check, temporal, RAG, confidence) and takes
+    tens of seconds each, so a dossier of posts cannot be verified inside the
+    HTTP request that asked for it -- Render's request timeout cuts it off. The
+    loop lives here so the Celery worker and the fallback thread run the exact
+    same code. `_run_claim_pipeline` stays the single implementation of one
+    claim's pipeline and is imported lazily to avoid an import cycle.
+    """
+    from app.web.routes.api import _run_claim_pipeline
+    from app.web.models.verification import SocialMediaPost, VerificationResult
+    from app.core.claim_extraction.extractor import ClaimExtractor
+
+    extractor = ClaimExtractor()
+    summaries: List[Dict[str, Any]] = []
+    remaining = max(0, int(max_claims))
+
+    for post_id in post_ids or []:
+        if remaining <= 0:
+            break
+        post = db.session.query(SocialMediaPost).filter_by(id=post_id).first()
+        if post is None:
+            continue
+        try:
+            claims = extractor.extract_claims_from_post(post)
+        except Exception as exc:
+            logger.error(f"Claim extraction failed for post {post_id}: {exc}", exc_info=True)
+            summaries.append({"post_id": post_id, "error": str(exc)})
+            continue
+        for claim in claims:
+            if remaining <= 0:
+                break
+            done = db.session.query(VerificationResult).filter_by(claim_id=claim.id).first()
+            if done and (done.evidence_chain or {}).get("layer_4") and (done.evidence_chain or {}).get("layer_7"):
+                continue  # already verified end to end
+            summaries.append(_run_claim_pipeline(claim))
+            remaining -= 1
+    return summaries
+
+
+@celery_app.task(name="app.core.tasks.run_verification_task", bind=True)
+def run_verification_task(self, post_ids: List[str], max_claims: int = 20) -> Dict[str, Any]:
+    """Verify posts in a worker so the HTTP request can return immediately."""
+    flask_app = create_app()
+    with flask_app.app_context():
+        summaries = run_verification_for_posts(post_ids, max_claims)
+        logger.info(f"Verification task finished: {len(post_ids)} post(s), {len(summaries)} claim(s)")
+        return {"post_ids": post_ids, "claims_processed": len(summaries), "summaries": summaries}
 
 
 @celery_app.task(name="app.core.tasks.run_task_analysis", bind=True)

@@ -137,8 +137,18 @@ class RAGEngine:
                 }
             }
             
-            # Update composite score
+            # Update composite score. Layer 4's own score lives in the chain;
+            # `confidence_score` is written by the Layer 7 scorer, so reading it
+            # here would fold the previous composite in as if it were a
+            # fact-check result.
+            layer4_chain = (verification.evidence_chain or {}).get("layer_4") or {}
             layer4 = verification.confidence_score or 0.0
+            if isinstance(layer4_chain, dict) and layer4_chain:
+                summary = layer4_chain.get("verdict_summary") or {}
+                for candidate in (layer4_chain.get("confidence"), summary.get("confidence")):
+                    if isinstance(candidate, (int, float)):
+                        layer4 = float(candidate)
+                        break
             layer5_conf = 0.0
             layer6_conf = result["confidence"]
             
