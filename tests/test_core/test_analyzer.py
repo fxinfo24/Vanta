@@ -599,8 +599,9 @@ def test_section_stops_starting_attempts_when_its_time_is_spent(monkeypatch):
         openrouter_client._request_json(
             [{"role": "user", "content": "hi"}], "primary/model", 0.3, 3000, label="t")
 
-    # One attempt is always allowed; the rest are abandoned, not queued up.
-    assert calls == [("primary/model", 3000)]
+    # The requested model's two budgets are always tried; fallbacks are not
+    # queued up once the section budget is gone.
+    assert calls == [("primary/model", 3000), ("primary/model", 6000)]
 
 
 def test_truncated_json_moves_on_to_the_fallback_model(monkeypatch):
@@ -768,6 +769,35 @@ def test_second_run_reuses_the_cached_dossier_instead_of_scraping(app, monkeypat
                                       now=datetime.utcnow() + timedelta(hours=13)) is None
         finally:
             reset_user_context(token)
+
+
+def test_cached_dossier_rederives_an_old_defaulted_badge(app):
+    """A cached "not verified" default is corrected from the stored payload.
+
+    Entries written before the normalizer stopped defaulting the field carry
+    verified=False for accounts the provider never described, and the report
+    then reads that as a finding.
+    """
+    from app.web.models.dossier import store_cached_dossier, get_cached_dossier
+    from app.web.models import db
+
+    dossier = {
+        "platform": "facebook",
+        "username": "someone",
+        "profile": {"username": "someone",
+                    "verified": False,  # written by the old normalizer
+                    "raw": {"id": "1", "followerCount": 10}},
+        "content": [{"text": "a post"}],
+    }
+    with app.app_context():
+        store_cached_dossier(db.session, 43, "facebook", "someone", dossier, ttl_hours=12)
+        cached = get_cached_dossier(db.session, 43, "facebook", "someone")
+        assert cached["profile"]["verified"] is None
+
+        # A provider that really said False keeps its answer.
+        dossier["profile"]["raw"]["verified"] = False
+        store_cached_dossier(db.session, 44, "facebook", "someone", dossier, ttl_hours=12)
+        assert get_cached_dossier(db.session, 44, "facebook", "someone")["profile"]["verified"] is False
 
 
 def test_cli_and_desktop_runs_use_an_operator_local_cache(monkeypatch):

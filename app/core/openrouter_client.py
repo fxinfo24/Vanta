@@ -552,10 +552,12 @@ class OpenRouterClient:
             budgets.append(min(max_tokens * 2, 12000))
 
         # Every attempt can burn its full HTTP timeout, and the candidate list
-        # is models x budgets. Without a wall clock a single section stretched a
-        # live run's "writing the report" step to 38+ minutes with no progress
-        # (task 35), so attempts stop once the section budget is spent. One
-        # attempt is always allowed, so a slow provider still gets its chance.
+        # is models x budgets. Without a wall clock a single section can occupy
+        # the worker for tens of minutes (live: 25+ minutes reported no progress
+        # on one section), so further attempts stop once the budget is spent.
+        # The requested model's two budgets are always allowed: that pair is the
+        # measured recovery path, and cutting it lost a whole section on a live
+        # run (content_analysis returned only "could not be generated").
         deadline = time.monotonic() + float(os.getenv("OPENROUTER_SECTION_SECONDS", "180"))
         attempts = 0
         skipped = 0
@@ -563,7 +565,7 @@ class OpenRouterClient:
         last_truncation: Optional[json.JSONDecodeError] = None
         for candidate in [model] + self._fallback_models(model):
             for budget in budgets:
-                if attempts and (skipped or time.monotonic() >= deadline):
+                if attempts >= 2 and (skipped or time.monotonic() >= deadline):
                     skipped += 1
                     continue
                 attempts += 1

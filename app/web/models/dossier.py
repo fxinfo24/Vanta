@@ -525,7 +525,17 @@ def get_cached_dossier(session, user_id, platform: str, profile_id: str,
     ).first()
     if row is None or row.expires_at is None or row.expires_at <= now:
         return None
-    return row.payload
+    payload = row.payload
+    # Entries collected before the normalizer stopped defaulting a missing
+    # badge to False still say "not verified" about accounts whose provider
+    # never sent the field. The raw provider payload is stored alongside, so the
+    # value is re-derived from it instead of charging the user a re-collection.
+    profile = payload.get("profile") if isinstance(payload, dict) else None
+    raw = profile.get("raw") if isinstance(profile, dict) else None
+    if isinstance(raw, dict):
+        verified = raw.get("verified")
+        profile["verified"] = verified if verified is not None else raw.get("is_verified")
+    return payload
 
 
 def store_cached_dossier(session, user_id, platform: str, profile_id: str,
