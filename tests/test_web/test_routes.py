@@ -636,6 +636,45 @@ def _enable_qstash(monkeypatch, key="sig_test_key"):
     monkeypatch.setattr(api_mod, "_qstash_config", lambda: ("tok", [key]))
 
 
+def test_qstash_publish_bounds_concurrency(monkeypatch):
+    """A whole-task fan-out must not arrive all at once.
+
+    One free instance cannot absorb 20 verification jobs: it was recycled
+    mid-run and the jobs came back as 502. The queue has to hold the backlog,
+    which means every publish carries the flow-control headers.
+    """
+    import urllib.request as urlreq
+    from app.web.routes.api import _qstash_publish
+
+    captured = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, timeout=None):
+        captured.append({k.lower(): v for k, v in req.header_items()})
+        return _Response()
+
+    monkeypatch.setattr(urlreq, "urlopen", fake_urlopen)
+    published, errors = _qstash_publish(
+        "tok", "https://api.example.com/api/verification/job",
+        [{"post_id": "p1"}, {"post_id": "p2"}],
+    )
+    assert (published, errors) == (2, [])
+    assert len(captured) == 2, "one message per post"
+    for headers in captured:
+        assert headers["upstash-flow-control-key"] == "vanta-verification"
+        assert headers["upstash-flow-control-value"] == "parallelism=2"
+        assert headers["upstash-retries"] == "5"
+
+
 def test_qstash_signature_binds_the_body_and_the_destination(app, monkeypatch):
     """The signature is the only credential on the public job endpoint."""
     from app.web.routes.api import _qstash_signature_ok

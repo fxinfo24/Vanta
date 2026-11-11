@@ -1887,7 +1887,16 @@ def _public_base_url():
 
 
 def _qstash_publish(token, destination, payloads):
-    """Publish one message per payload. Returns (published, errors)."""
+    """Publish one message per payload. Returns (published, errors).
+
+    Deliveries are bounded by QStash flow control rather than fired at once.
+    A whole-task run publishes one message per collected post; on this host
+    that meant 20 jobs arriving together, and the free instance (512 MB, one
+    gunicorn worker, 4 threads) was recycled mid-run - the jobs got 502, then
+    retried against a service that was still booting. Flow control makes the
+    queue hold the backlog so the instance never runs more than two jobs at a
+    time, which is what one free instance can actually carry.
+    """
     import urllib.error
     import urllib.request
     published, errors = 0, []
@@ -1896,7 +1905,9 @@ def _qstash_publish(token, destination, payloads):
                                      data=json.dumps(payload).encode(), method="POST")
         req.add_header("Authorization", f"Bearer {token}")
         req.add_header("Content-Type", "application/json")
-        req.add_header("Upstash-Retries", "3")
+        req.add_header("Upstash-Retries", "5")
+        req.add_header("Upstash-Flow-Control-Key", "vanta-verification")
+        req.add_header("Upstash-Flow-Control-Value", "parallelism=2")
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 resp.read()
